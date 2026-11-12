@@ -1,0 +1,31 @@
+# Polls the deployed app every 10 minutes so it picks up each new IMD frame.
+# Vercel's own cron only runs once a day on the Hobby plan, so this does the real scheduling.
+# Repository secrets needed:  LANKAMET_URL  (e.g. https://lanka-met.vercel.app)   CRON_SECRET
+name: Ingest tick
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ingest-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      LANKAMET_URL: ${{ secrets.LANKAMET_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: Call /api/ingest
+        run: |
+          if [ -z "$LANKAMET_URL" ]; then
+            echo "::notice::Set the LANKAMET_URL repository secret (and CRON_SECRET) to enable polling."
+            exit 0
+          fi
+          curl -fsS --max-time 120 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$LANKAMET_URL/api/ingest?run=1"

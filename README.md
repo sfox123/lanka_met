@@ -80,7 +80,21 @@ API: `GET /api/state?hours=24` · `GET /api/forecast` · `GET /api/field/{ir1|vi
 
 Environment (all optional): `OPEN_METEO_API_KEY` (a paid Open-Meteo key; switches to the `customer-api` endpoints — `OPEN_MET_KEY` is accepted too), `LANKAMET_STORAGE`, `LANKAMET_USER_AGENT` (put a contact email here before deploying), `IMD_BASE_URL`, `OPEN_METEO_BASE`, `NEXT_PUBLIC_MAP_STYLE_URL`, `LANKAMET_NO_SCHEDULER=1`. Put them in `.env` (git-ignored) or the host's environment settings.
 
-**Hosting:** the app needs a long-running Node process with a writable disk — it stores frames under `storage/` and polls IMD from an in-process scheduler. It runs on a VPS, Docker host, Railway, Render or Fly.io (mount a persistent volume at `storage/` or set `LANKAMET_STORAGE` to one). It does **not** run on serverless platforms such as Vercel or Netlify: their filesystem is read-only (`ENOENT … mkdir '/var/task/storage'`), functions are killed before the IMD download finishes, and nothing runs between requests. Deploying there needs the brief's original architecture (Supabase storage + external cron).
+## Deploying on Vercel
+
+Serverless functions have no disk and do not run between requests, so on Vercel the app stores everything in **Vercel Blob** and is driven by an external cron. Local development is unchanged (files under `storage/`); the Blob backend switches on automatically when `BLOB_READ_WRITE_TOKEN` is present.
+
+1. **Import the repo** into a Vercel project (framework: Next.js, defaults are fine). `vercel.json` pins functions to Mumbai (`bom1`) so IMD downloads do not time out from the US.
+2. **Storage → Create → Blob**, and connect the store to the project. That sets `BLOB_READ_WRITE_TOKEN`.
+3. **Environment variables:** `CRON_SECRET` (any long random string; protects the ingest endpoint) and `OPEN_METEO_API_KEY`. Redeploy after adding them.
+4. **Polling.** Vercel Cron only runs once a day on the Hobby plan, so the repo ships a GitHub Actions workflow (`.github/workflows/ingest.yml`) that calls `GET /api/ingest?run=1` every 10 minutes. In the GitHub repo add two **Actions secrets**: `LANKAMET_URL` (e.g. `https://lanka-met.vercel.app`) and `CRON_SECRET` (same value as on Vercel). On a Pro plan you can instead change the schedule in `vercel.json` to `*/5 * * * *`.
+5. Open `https://<app>/api/ingest` to see ingest health, or `…/api/ingest?run=1&key=<CRON_SECRET>` to run a pass by hand.
+
+One pass (three HEADs, up to three downloads, analysis, nowcast) takes 10–25 s and must finish inside the function's 60 s limit. GitHub's schedule can drift by several minutes, so expect frames to appear 45–60 min after their scan time. Each day adds roughly 100 MB of raw frames (kept 3 days on Blob) and 12 MB of fields (kept) — check the Blob quota of your plan.
+
+Known limits of the serverless setup: two overlapping passes (e.g. a manual run during the cron tick) can both write `index.json`; the later write wins and may drop the other's frame. A dropped frame is picked up again by `?reprocess=1`, which rebuilds everything from the stored raw frames.
+
+**Other hosts:** any long-running Node host (VPS, Docker, Railway, Render, Fly.io) works with no configuration — mount a persistent volume at `storage/` or point `LANKAMET_STORAGE` at one, and the in-process scheduler does the polling.
 
 ## Differences from the brief
 

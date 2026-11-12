@@ -190,6 +190,8 @@ export interface EstateState {
 
 export interface IngestStatus {
   running: boolean;
+  /** a configuration problem the operator should fix (shown as a banner) */
+  warning?: string;
   lastRun: string | null;
   lastOk: string | null;
   lastMessage: string;

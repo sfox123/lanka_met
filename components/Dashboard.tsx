@@ -239,6 +239,7 @@ export default function Dashboard() {
           </button>
         </header>
         {error && <div className="banner">⚠ {error}</div>}
+        {app?.status.warning && <div className="banner">⚠ {app.status.warning}</div>}
         {ageState === 'red' && !error && <div className="banner">⚠ No new satellite frame for over 2 hours. IMD may be late, or the ingest is failing: {app?.status.lastMessage}</div>}
       </div>
 

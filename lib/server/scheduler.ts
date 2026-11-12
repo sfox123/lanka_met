@@ -1,13 +1,16 @@
 // In-process scheduler: started once from instrumentation.ts when the Next.js server boots.
 // Satellite: every 5 minutes (three HEAD requests; a download only when IMD has a new frame).
 // Open-Meteo: checked on the same tick, refreshed when the cache is older than 3 hours.
+//
+// Not used on Vercel: functions do not stay alive between requests, so there an external cron
+// calls GET /api/ingest?run=1 instead (see vercel.json and .github/workflows/ingest.yml).
 import { runIngest } from './ingest';
 import { getForecast } from './openmeteo';
 
 const g = globalThis as unknown as { __lankamet_timer?: NodeJS.Timeout };
 
 export function startScheduler() {
-  if (g.__lankamet_timer || process.env.LANKAMET_NO_SCHEDULER === '1') return;
+  if (g.__lankamet_timer || process.env.LANKAMET_NO_SCHEDULER === '1' || process.env.VERCEL) return;
   const tick = async () => {
     await runIngest();
     await getForecast();

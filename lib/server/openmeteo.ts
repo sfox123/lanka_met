@@ -2,7 +2,7 @@
 // spot analyses at weather-system centres. Results are cached on disk and refreshed every 3 h.
 // Weather data by Open-Meteo.com (CC BY 4.0). The free tier is for non-commercial use.
 import { getMasks } from './masks';
-import { readJson, storagePath, writeJson } from './store';
+import { KEYS, backendKind, readJson, writeJson } from './store';
 import type { Climatology, DailyForecast, EstateForecast, ForecastBundle, GridForecast, HourlyForecast, WeatherSystem } from '../shared/types';
 
 // A paid Open-Meteo key (OPEN_METEO_API_KEY, or OPEN_MET_KEY) switches to the customer endpoints,
@@ -38,11 +38,12 @@ const GRID = { west: 79.25, east: 82.25, south: 5.5, north: 10.0, step: 0.25 };
 
 interface Shared {
   bundle: ForecastBundle | null;
+  bundleReadAt: number;
   pending: Promise<ForecastBundle> | null;
   callsToday: { day: string; n: number };
 }
 const g = globalThis as unknown as { __lankamet_om?: Shared };
-const shared: Shared = (g.__lankamet_om ??= { bundle: null, pending: null, callsToday: { day: '', n: 0 } });
+const shared: Shared = (g.__lankamet_om ??= { bundle: null, bundleReadAt: 0, pending: null, callsToday: { day: '', n: 0 } });
 
 async function getJson(url: string, weight: number): Promise<any> {
   const day = new Date().toISOString().slice(0, 10);
@@ -116,8 +117,7 @@ async function fetchGrid(): Promise<GridForecast> {
 
 /** Mean monthly rainfall per estate from ERA5 (Open-Meteo Historical Weather API). Fetched once. */
 async function getClimatology(): Promise<Record<string, Climatology>> {
-  const file = storagePath('climatology.json');
-  const cached = await readJson<{ data: Record<string, Climatology>; triedAt?: string } | null>(file, null);
+  const cached = await readJson<{ data: Record<string, Climatology>; triedAt?: string } | null>(KEYS.climatology, null);
   const { estates } = getMasks();
   if (cached && estates.every((e) => cached.data[e.slug])) return cached.data;
   if (cached?.triedAt && Date.now() - Date.parse(cached.triedAt) < 24 * 3600e3) return cached.data;
@@ -139,18 +139,18 @@ async function getClimatology(): Promise<Record<string, Climatology>> {
   } catch (err) {
     console.warn('[lankamet] climatology fetch failed:', (err as Error).message);
   }
-  await writeJson(file, { data, triedAt: new Date().toISOString() });
+  await writeJson(KEYS.climatology, { data, triedAt: new Date().toISOString() });
   return data;
 }
 
 async function refresh(): Promise<ForecastBundle> {
   const before = shared.callsToday.n;
-  const prev = shared.bundle ?? (await readJson<ForecastBundle | null>(storagePath('forecast.json'), null));
+  const prev = shared.bundle ?? (await readJson<ForecastBundle | null>(KEYS.forecast, null));
   try {
     const [estates, grid] = await Promise.all([fetchEstates(), fetchGrid()]);
     const climatology = await getClimatology();
     const bundle: ForecastBundle = { fetchedAt: new Date().toISOString(), estates, grid, climatology, calls: shared.callsToday.n - before };
-    await writeJson(storagePath('forecast.json'), bundle);
+    await writeJson(KEYS.forecast, bundle);
     return bundle;
   } catch (err) {
     const message = (err as Error).message;
@@ -162,8 +162,7 @@ async function refresh(): Promise<ForecastBundle> {
 
 /** Latest forecast bundle; refreshes when older than 3 h (or when forced). Never throws. */
 export async function getForecast(force = false): Promise<ForecastBundle> {
-  if (!shared.bundle) shared.bundle = await readJson<ForecastBundle | null>(storagePath('forecast.json'), null);
-  const b = shared.bundle;
+  const b = await peekForecast();
   const { estates } = getMasks();
   const fresh = b?.fetchedAt && Date.now() - Date.parse(b.fetchedAt) < REFRESH_MS && estates.every((e) => b.estates.some((f) => f.slug === e.slug));
   // after a failure, wait 10 minutes before trying again
@@ -184,9 +183,18 @@ export async function getForecast(force = false): Promise<ForecastBundle> {
   return b && b.estates.length && !force ? b : shared.pending;
 }
 
-/** Cached bundle only — never triggers a network call. */
+/**
+ * Cached bundle only — never calls Open-Meteo. On blob storage another instance may have refreshed
+ * the forecast, so the in-memory copy is re-read from the store once a minute.
+ */
 export async function peekForecast(): Promise<ForecastBundle | null> {
-  if (!shared.bundle) shared.bundle = await readJson<ForecastBundle | null>(storagePath('forecast.json'), null);
+  const stale = backendKind() === 'blob' && Date.now() - shared.bundleReadAt > 60000 && !shared.pending;
+  if (!shared.bundle || stale) {
+    const fromStore = await readJson<ForecastBundle | null>(KEYS.forecast, null);
+    // never replace a newer in-memory bundle with an older stored one
+    if (fromStore && (!shared.bundle || (fromStore.fetchedAt ?? '') >= (shared.bundle.fetchedAt ?? ''))) shared.bundle = fromStore;
+    shared.bundleReadAt = Date.now();
+  }
   return shared.bundle;
 }
 

@@ -95,7 +95,7 @@ export async function buildState(hours: number): Promise<AppState> {
     estates,
     estateState: estates.map((e) => estateStateFor(e.slug, all.slice(-8), nowcast, forecast?.estates.find((f) => f.slug === e.slug), nowMs)),
     nowcast,
-    status: getIngestStatus(),
+    status: await getIngestStatus(),
     forecastFetchedAt: forecast?.fetchedAt ?? null,
   };
 }

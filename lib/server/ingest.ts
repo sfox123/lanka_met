@@ -1,48 +1,62 @@
 // Ingest: poll IMD politely, store new frames, derive fields and metrics, refresh the nowcast.
+// One call = one pass. Locally the scheduler calls it every 5 minutes; on Vercel an external
+// cron hits GET /api/ingest?run=1 and the pass must finish within the function's time limit.
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import fsp from 'node:fs/promises';
-import path from 'node:path';
 import { DOMAINS, pxKm } from '../shared/geo';
 import { advect, computeFlow, meanFlow, type Flow } from '../shared/flow';
 import { CFG, cloudStats } from '../shared/risk';
 import { CHANNELS, type Channel, type CloudStats, type FrameMeta, type IngestStatus, type Nowcast } from '../shared/types';
+import { backendWarning } from './backend';
 import { getMasks } from './masks';
 import { annotateSystems } from './openmeteo';
 import { readHeaderTime } from './header-time';
 import { calibrate, cleanBox, decodeJpeg, fieldDifference, resample } from './process';
-import { STORAGE, clearFieldCache, dateFromId, idFromDate, listFrames, loadField, loadIndex, rawPath, readJson, saveField, saveIndex, storagePath, writeFile, writeJson } from './store';
+import { KEYS, backendKind, clearFieldCache, dateFromId, deleteKeys, getBytes, idFromDate, listFrames, listKeys, loadField, loadIndex, putBytes, readJson, saveField, saveIndex, writeJson } from './store';
 import { detectSystems } from './systems';
 
 const IMD_BASE = process.env.IMD_BASE_URL ?? 'https://mausam.imd.gov.in/Satellite/';
 const UA = process.env.LANKAMET_USER_AGENT ?? 'LankaMet/0.1 (Sri Lanka cloud & rain dashboard)';
-const RAW_RETENTION_DAYS = 14;
+const ON_VERCEL = !!process.env.VERCEL;
+/** Raw frames are only needed for a reprocess; blob storage is metered, so keep fewer there. */
+const RAW_RETENTION_DAYS = Number(process.env.LANKAMET_RAW_DAYS) || (ON_VERCEL ? 3 : 14);
 /** IMD publishes a frame 40–45 min after its scan starts. */
 const PUBLISH_LAG_MIN = 40;
+// a serverless pass has about 60 s in total, so each IMD request gets less rope there
+const FETCH_TIMEOUT_MS = ON_VERCEL ? 20000 : 60000;
+const FETCH_TRIES = ON_VERCEL ? 2 : 3;
 
 interface Shared {
-  status: IngestStatus;
+  status: IngestStatus | null;
+  statusReadAt: number;
   busy: Promise<string> | null;
   /** raw files that turned out to be duplicates — no need to decode them again */
   skipped: Set<string>;
 }
 const g = globalThis as unknown as { __lankamet_ingest?: Shared };
-const shared: Shared = (g.__lankamet_ingest ??= {
-  status: { running: false, lastRun: null, lastOk: null, lastMessage: 'not run yet', log: [] },
-  busy: null,
-  skipped: new Set(),
-});
+const shared: Shared = (g.__lankamet_ingest ??= { status: null, statusReadAt: 0, busy: null, skipped: new Set() });
 
-export const getIngestStatus = (): IngestStatus => shared.status;
+const EMPTY_STATUS: IngestStatus = { running: false, lastRun: null, lastOk: null, lastMessage: 'not run yet', log: [] };
 
-function log(ok: boolean, message: string) {
+/** Ingest health, shared across server instances through the store. */
+export async function getIngestStatus(): Promise<IngestStatus> {
+  if (!shared.status || Date.now() - shared.statusReadAt > 20000) {
+    shared.status = await readJson<IngestStatus>(KEYS.status, EMPTY_STATUS);
+    shared.statusReadAt = Date.now();
+  }
+  return { ...shared.status, running: !!shared.busy, warning: backendWarning() ?? undefined };
+}
+
+async function log(ok: boolean, message: string) {
+  const status = await getIngestStatus();
   const ts = new Date().toISOString();
-  shared.status.log.unshift({ ts, ok, message });
-  shared.status.log.length = Math.min(shared.status.log.length, 40);
-  shared.status.lastRun = ts;
-  shared.status.lastMessage = message;
-  if (ok) shared.status.lastOk = ts;
+  status.log.unshift({ ts, ok, message });
+  status.log.length = Math.min(status.log.length, 40);
+  status.lastRun = ts;
+  status.lastMessage = message;
+  if (ok) status.lastOk = ts;
+  shared.status = status;
   console.log(`[lankamet] ${ok ? 'ok ' : 'ERR'} ${message}`);
+  await writeJson(KEYS.status, { ...status, running: false }).catch((err) => console.warn('[lankamet] could not save status:', (err as Error).message));
 }
 
 /**
@@ -55,24 +69,23 @@ export function estimateScanStart(firstSeen: Date): Date {
   return t;
 }
 
-async function fetchWithRetry(url: string, init: RequestInit, tries = 3): Promise<Response> {
+async function fetchWithRetry(url: string, init: RequestInit, tries = FETCH_TRIES): Promise<Response> {
   let last: unknown;
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await fetch(url, { ...init, headers: { 'User-Agent': UA, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(60000) });
+      const res = await fetch(url, { ...init, headers: { 'User-Agent': UA, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (res.ok) return res;
       last = new Error(`HTTP ${res.status}`);
     } catch (err) {
       last = err;
     }
-    await new Promise((r) => setTimeout(r, 2000 * 2 ** i));
+    if (i < tries - 1) await new Promise((r) => setTimeout(r, 2000 * 2 ** i));
   }
-  throw last;
+  throw new Error(`IMD ${init.method} failed: ${(last as Error)?.message ?? last}`);
 }
 
 interface Processed {
   id: string;
-  /** 'stored' | 'duplicate' | 'needs_review' */
   outcome: 'stored' | 'duplicate' | 'needs_review';
   note: string;
 }
@@ -214,60 +227,60 @@ async function buildNowcast(): Promise<Nowcast | null> {
     estates: masks.estates.map((e) => ({ slug: e.slug, leads: perEstate.get(e.slug) ?? [] })),
     island,
   };
-  await writeJson(storagePath('nowcast.json'), nowcast);
+  await writeJson(KEYS.nowcast, nowcast);
   return nowcast;
 }
 
 export async function getNowcast(): Promise<Nowcast | null> {
-  const nc = await readJson<Nowcast | null>(storagePath('nowcast.json'), null);
+  const nc = await readJson<Nowcast | null>(KEYS.nowcast, null);
   if (!nc) return null;
   const frames = (await listFrames()).filter((f) => f.channels.ir1 && f.status === 'ok');
   return frames.length && frames[frames.length - 1].id === nc.baseId ? nc : null;
 }
 
-async function pruneRaw(): Promise<void> {
-  const cutoff = Date.now() - RAW_RETENTION_DAYS * 86400e3;
-  for (const ch of CHANNELS) {
-    const dir = path.join(STORAGE, 'raw', ch);
-    if (!fs.existsSync(dir)) continue;
-    for (const f of await fsp.readdir(dir)) {
-      const id = f.replace(/\.jpg$/, '');
-      try {
-        if (dateFromId(id).getTime() < cutoff) await fsp.unlink(path.join(dir, f));
-      } catch {
-        /* not a frame file */
-      }
-    }
-  }
+/** Parse "raw/{channel}/{id}.jpg". */
+function parseRawKey(key: string): { ch: Channel; id: string } | null {
+  const m = /^raw\/(ir1|vis|wv)\/(\d{8}_\d{4})\.jpg$/.exec(key);
+  return m ? { ch: m[1] as Channel, id: m[2] } : null;
 }
 
-/** Process raw files that are on disk but not in the index (or everything, when `all`). */
+async function pruneRaw(): Promise<void> {
+  const cutoff = Date.now() - RAW_RETENTION_DAYS * 86400e3;
+  const old = (await listKeys('raw/')).filter((e) => {
+    const p = parseRawKey(e.key);
+    return p && dateFromId(p.id).getTime() < cutoff;
+  });
+  await deleteKeys(old.map((e) => e.key));
+}
+
+/**
+ * Process raw frames that are in the store but not in the index (or everything, when `all`).
+ * Locally this picks up files dropped into storage/raw; on blob storage it only runs for a reprocess.
+ */
 async function backfill(all: boolean): Promise<number> {
+  if (backendKind() === 'blob' && !all) return 0;
   const index = await loadIndex();
   if (all) {
     index.clear();
     clearFieldCache();
     shared.skipped.clear();
   }
-  const todo: { id: string; ch: Channel }[] = [];
-  for (const ch of CHANNELS) {
-    const dir = path.join(STORAGE, 'raw', ch);
-    if (!fs.existsSync(dir)) continue;
-    for (const f of await fsp.readdir(dir)) {
-      const id = f.replace(/\.jpg$/, '');
-      if (!/^\d{8}_\d{4}$/.test(id) || shared.skipped.has(`${ch}/${id}`)) continue;
-      if (!index.get(id)?.channels[ch] && index.get(id)?.status !== 'needs_review') todo.push({ id, ch });
-    }
+  const todo: { key: string; id: string; ch: Channel; uploadedAt: string }[] = [];
+  for (const e of await listKeys('raw/')) {
+    const p = parseRawKey(e.key);
+    if (!p || shared.skipped.has(`${p.ch}/${p.id}`)) continue;
+    if (!index.get(p.id)?.channels[p.ch] && index.get(p.id)?.status !== 'needs_review') todo.push({ key: e.key, ...p, uploadedAt: e.uploadedAt });
   }
   todo.sort((a, b) => a.id.localeCompare(b.id) || a.ch.localeCompare(b.ch));
   const touched = new Set<string>();
-  for (const { id, ch } of todo) {
-    const file = rawPath(ch, id);
-    const stat = await fsp.stat(file);
-    const res = await processRaw(ch, await fsp.readFile(file), { hintId: id, fetchedAt: stat.mtime.toISOString() });
+  for (const { key, id, ch, uploadedAt } of todo) {
+    const buf = await getBytes(key);
+    if (!buf) continue;
+    const res = await processRaw(ch, buf, { hintId: id, fetchedAt: uploadedAt });
     if (res.outcome === 'stored' && res.id !== id) {
       // the file name disagreed with the time printed in the image: the image wins
-      await fsp.rename(file, rawPath(ch, res.id)).catch(() => fsp.unlink(file).catch(() => {}));
+      await putBytes(KEYS.raw(ch, res.id), buf, 'image/jpeg');
+      await deleteKeys([key]);
     } else if (res.outcome !== 'stored') {
       shared.skipped.add(`${ch}/${id}`);
     }
@@ -292,7 +305,7 @@ interface PollState {
 
 async function pollImd(): Promise<string[]> {
   const notes: string[] = [];
-  const state = await readJson<PollState>(storagePath('ingest-state.json'), { length: {}, lastNewAt: null, lastForcedAt: null });
+  const state = await readJson<PollState>(KEYS.poll, { length: {}, lastNewAt: null, lastForcedAt: null });
   state.length ??= {};
   // Last-Modified is re-stamped every five minutes, so a new frame is recognised by a change of
   // Content-Length. As a safety net, download anyway (at most every 20 minutes) when nothing has
@@ -314,7 +327,7 @@ async function pollImd(): Promise<string[]> {
     changed = true;
     if (done.outcome === 'duplicate') continue;
     // a frame that failed the layout check must never overwrite a good raw file
-    await writeFile(done.outcome === 'stored' ? rawPath(ch, done.id) : storagePath('review', `${ch}_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`), buf);
+    await putBytes(done.outcome === 'stored' ? KEYS.raw(ch, done.id) : KEYS.review(ch), buf, 'image/jpeg');
     notes.push(done.note);
     if (done.outcome === 'stored') {
       state.lastNewAt = new Date().toISOString();
@@ -328,32 +341,31 @@ async function pollImd(): Promise<string[]> {
     if (frame) await analyse(frame, true);
   }
   if (notes.length) await saveIndex();
-  if (changed || force) await writeJson(storagePath('ingest-state.json'), state);
+  if (changed || force) await writeJson(KEYS.poll, state);
   return notes;
 }
 
 /**
  * One ingest pass. Safe to call often: it sends three HEAD requests and downloads only what changed.
- * `reprocess` rebuilds every field and metric from the raw files on disk.
+ * `reprocess` rebuilds every field and metric from the stored raw frames.
  */
 export function runIngest(opts: { reprocess?: boolean; offline?: boolean } = {}): Promise<string> {
   if (shared.busy) return shared.busy;
-  shared.status.running = true;
   shared.busy = (async () => {
     try {
+      await loadIndex(true); // another instance may have written since we last looked
       const filled = await backfill(!!opts.reprocess);
       const notes = opts.offline ? [] : await pollImd();
       if (filled || notes.length || !(await getNowcast())) await buildNowcast();
-      await pruneRaw();
-      const message = [filled ? `${filled} raw file(s) processed from disk` : '', ...notes].filter(Boolean).join('; ') || 'no new frames';
-      log(true, message);
+      if (notes.length || backendKind() === 'fs') await pruneRaw();
+      const message = [filled ? `${filled} raw file(s) processed from the store` : '', ...notes].filter(Boolean).join('; ') || 'no new frames';
+      await log(true, message);
       return message;
     } catch (err) {
       const message = `ingest failed: ${(err as Error).message}`;
-      log(false, message);
+      await log(false, message);
       return message;
     } finally {
-      shared.status.running = false;
       shared.busy = null;
     }
   })();
