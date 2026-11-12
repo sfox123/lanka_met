@@ -80,9 +80,12 @@ export class FsBackend implements Backend {
 }
 
 // ── Vercel Blob ────────────────────────────────────────────────────────
-// Authenticated through BLOB_READ_WRITE_TOKEN (set automatically when a Blob store is attached to
-// the Vercel project). Overwritten objects can be served from the CDN for up to cacheControlMaxAge,
+// Authenticated either through OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID, which is what Vercel sets
+// when a Blob store is connected today) or a long-lived BLOB_READ_WRITE_TOKEN; the SDK picks
+// whichever is present. Stores are private by default (LANKAMET_BLOB_ACCESS=public for old ones). Overwritten objects can be served from the CDN for up to cacheControlMaxAge,
 // so mutable JSON is written with the minimum (60 s) and read with the cache bypassed.
+const BLOB_ACCESS: 'public' | 'private' = process.env.LANKAMET_BLOB_ACCESS === 'public' ? 'public' : 'private';
+
 export class BlobBackend implements Backend {
   readonly kind = 'blob' as const;
 
@@ -92,7 +95,7 @@ export class BlobBackend implements Backend {
 
   async get(key: string, opts: { fresh?: boolean } = {}): Promise<Buffer | null> {
     const { get } = await this.sdk();
-    const res = await get(key, { access: 'public', useCache: !opts.fresh, abortSignal: AbortSignal.timeout(20000) });
+    const res = await get(key, { access: BLOB_ACCESS, useCache: !opts.fresh, abortSignal: AbortSignal.timeout(20000) });
     if (!res || !res.stream) return null;
     return Buffer.from(await new Response(res.stream).arrayBuffer());
   }
@@ -100,7 +103,7 @@ export class BlobBackend implements Backend {
   async put(key: string, data: Uint8Array, opts: PutOptions): Promise<void> {
     const { put } = await this.sdk();
     await put(key, Buffer.from(data.buffer, data.byteOffset, data.byteLength), {
-      access: 'public',
+      access: BLOB_ACCESS,
       addRandomSuffix: false,
       allowOverwrite: true,
       contentType: opts.contentType,
@@ -132,9 +135,10 @@ const g = globalThis as unknown as { __lankamet_backend?: Backend; __lankamet_ba
 export function getBackend(): Backend {
   if (g.__lankamet_backend) return g.__lankamet_backend;
   g.__lankamet_backend_warning = null;
-  const want = process.env.LANKAMET_BACKEND ?? (process.env.BLOB_READ_WRITE_TOKEN ? 'blob' : 'fs');
+  const hasBlob = Boolean(process.env.BLOB_STORE_ID || process.env.BLOB_READ_WRITE_TOKEN);
+  const want = process.env.LANKAMET_BACKEND ?? (hasBlob ? 'blob' : 'fs');
   if (want === 'blob') {
-    if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error('LANKAMET_BACKEND=blob but BLOB_READ_WRITE_TOKEN is not set');
+    if (!hasBlob) throw new Error('LANKAMET_BACKEND=blob but neither BLOB_STORE_ID nor BLOB_READ_WRITE_TOKEN is set');
     g.__lankamet_backend = new BlobBackend();
   } else if (process.env.VERCEL && !process.env.LANKAMET_STORAGE) {
     // serverless without a Blob store: the project folder is read-only, only /tmp can be written,
