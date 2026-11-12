@@ -23,7 +23,8 @@ export default function Dashboard() {
   const [app, setApp] = useState<AppState | null>(null);
   const [bundle, setBundle] = useState<ForecastBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [hours, setHours] = useState(24);
+  /** Sri Lanka date to show; null = today */
+  const [day, setDay] = useState<string | null>(null);
   const [channel, setChannel] = useState<Channel>('ir1');
   const [domain, setDomain] = useState<DomainId>('sl');
   const [palette, setPalette] = useState<PaletteId>('enhanced');
@@ -42,18 +43,22 @@ export default function Dashboard() {
   const [now, setNow] = useState(() => Date.now());
   const timeRef = useRef(0);
   const liveRef = useRef(true);
+  /** after a day change, move the cursor to the start of that day's frames once they arrive */
+  const seekToDayRef = useRef<string | null>(null);
 
   // ── data ────────────────────────────────────────────────────────────
   const loadState = useCallback(async () => {
     try {
-      const res = await fetch(`/api/state?hours=${hours}`, { cache: 'no-store' });
+      const res = await fetch(day ? `/api/state?day=${day}` : '/api/state', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setApp(await res.json());
+      const next: AppState = await res.json();
+      // ignore a late response for a day the user has already left
+      setApp((cur) => (day && next.day !== day && cur ? cur : next));
       setError(null);
     } catch (err) {
       setError(`Cannot reach the LankaMet server (${(err as Error).message}). Showing the last data received.`);
     }
-  }, [hours]);
+  }, [day]);
   useEffect(() => {
     void loadState();
     const id = setInterval(loadState, 60000);
@@ -78,22 +83,37 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bundle?.fetchedAt]);
 
+  const live = !app || !day || day === app.today;
   const frames = useMemo(() => (app?.frames ?? []).filter((f) => f.status === 'ok'), [app]);
-  const tm = useMemo(() => buildTimeModel(frames, bundle?.grid ?? null), [frames, bundle]);
-  const latest = frames[frames.length - 1];
+  // when the live day has no frames yet the timeline ends at "now", refreshed once a minute
+  const nowMinute = Math.floor(now / 60000) * 60000;
+  const tm = useMemo(
+    () => (app ? buildTimeModel(frames, live ? (bundle?.grid ?? null) : null, { start: Date.parse(app.dayStart), end: Date.parse(app.dayEnd), live, now: nowMinute }) : null),
+    [app, frames, bundle, live, nowMinute],
+  );
+  const latest = app?.latest ?? null;
 
   useEffect(() => {
     engine.preload(frames, channel, domain);
   }, [engine, frames, channel, domain]);
 
-  // follow the newest frame unless the user has moved the timeline
+  // cursor placement when the data changes: follow the newest frame while live, or land on the
+  // first frame of a freshly chosen day
   useEffect(() => {
-    if (!tm) return;
-    if (liveRef.current || timeRef.current < tm.t0 || timeRef.current > tm.tModelEnd || timeRef.current === 0) {
-      timeRef.current = tm.tLast;
-      setUiTime(tm.tLast);
+    if (!tm || !app) return;
+    if (seekToDayRef.current && app.day === seekToDayRef.current) {
+      seekToDayRef.current = null;
+      const first = frames.find((f) => Date.parse(f.t) >= tm.t0);
+      timeRef.current = tm.live ? tm.tLast : first ? Date.parse(first.t) : tm.t0;
+      setUiTime(timeRef.current);
+      return;
     }
-  }, [tm]);
+    const outside = timeRef.current < tm.t0 || timeRef.current > tm.tModelEnd || timeRef.current === 0;
+    if ((tm.live && liveRef.current) || outside) {
+      timeRef.current = tm.live ? tm.tLast : tm.t0;
+      setUiTime(timeRef.current);
+    }
+  }, [tm, app, frames]);
 
   // UI clock: a few times a second is plenty for labels; the map reads timeRef every frame
   useEffect(() => {
@@ -106,6 +126,12 @@ export default function Dashboard() {
   }, [engine]);
 
   // ── playback ────────────────────────────────────────────────────────
+  /** first and last frame time of the day shown, for the selected channel */
+  const span = useMemo<[number, number] | null>(() => {
+    if (!tm) return null;
+    const ts = frames.filter((f) => f.channels[channel]).map((f) => Date.parse(f.t)).filter((t) => t >= tm.t0 && t <= tm.tLast);
+    return ts.length ? [ts[0], ts[ts.length - 1]] : null;
+  }, [tm, frames, channel]);
   useEffect(() => {
     if (!playing || !tm) return;
     let raf = 0;
@@ -116,15 +142,17 @@ export default function Dashboard() {
       const dt = Math.min(100, ts - last);
       last = ts;
       const inModel = timeRef.current > tm.tNowcastEnd + 1;
-      const from = inModel ? tm.tNowcastEnd : tm.t0;
-      const to = inModel ? tm.tModelEnd : tm.tNowcastEnd;
+      // loop over the part of the day that has frames, not the empty hours around it
+      const from = inModel ? tm.tNowcastEnd : (span?.[0] ?? tm.t0);
+      const to = inModel ? tm.tModelEnd : tm.live ? tm.tNowcastEnd : (span?.[1] ?? tm.tLast);
       if (to <= from) return;
+      if (!inModel && timeRef.current < from) timeRef.current = from;
       if (hold > 0) {
         hold -= dt;
         if (hold <= 0) timeRef.current = from;
         return;
       }
-      // data time per real second: one frame interval per half second, faster for long histories
+      // data time per real second: one frame interval per half second, faster for long stretches
       const perSec = inModel ? 4 * 3600e3 : Math.max(60 * 60000, (to - from) / 25);
       timeRef.current += (dt / 1000) * perSec * speed;
       if (timeRef.current >= to) {
@@ -134,7 +162,7 @@ export default function Dashboard() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, tm, speed]);
+  }, [playing, tm, speed, span]);
 
   const seek = useCallback((t: number) => {
     liveRef.current = false;
@@ -144,9 +172,11 @@ export default function Dashboard() {
 
   const stops = useMemo(() => {
     if (!tm) return [];
-    const s = frames.filter((f) => f.channels[channel]).map((f) => Date.parse(f.t)).filter((t) => t >= tm.t0);
-    for (const lead of CFG.nowcastLeads) if (tm.tLast + lead * 60000 <= tm.tNowcastEnd) s.push(tm.tLast + lead * 60000);
-    for (const t of bundle?.grid?.time ?? []) if (Date.parse(t) > tm.tNowcastEnd && Date.parse(t) <= tm.tModelEnd) s.push(Date.parse(t));
+    const s = frames.filter((f) => f.channels[channel]).map((f) => Date.parse(f.t)).filter((t) => t >= tm.t0 && t <= tm.tLast);
+    if (tm.live) {
+      for (const lead of CFG.nowcastLeads) if (tm.tLast + lead * 60000 <= tm.tNowcastEnd) s.push(tm.tLast + lead * 60000);
+      for (const t of bundle?.grid?.time ?? []) if (Date.parse(t) > tm.tNowcastEnd && Date.parse(t) <= tm.tModelEnd) s.push(Date.parse(t));
+    }
     return s.sort((a, b) => a - b);
   }, [tm, frames, channel, bundle]);
   const step = useCallback(
@@ -158,13 +188,28 @@ export default function Dashboard() {
     },
     [stops, seek],
   );
+  const pickDay = useCallback(
+    (d: string) => {
+      if (!app) return;
+      setPlaying(false);
+      liveRef.current = d === app.today;
+      seekToDayRef.current = d;
+      setDay(d === app.today ? null : d);
+    },
+    [app],
+  );
   const goLive = useCallback(() => {
-    if (!tm) return;
     setPlaying(false);
     liveRef.current = true;
+    if (day) {
+      seekToDayRef.current = app?.today ?? null;
+      setDay(null);
+      return;
+    }
+    if (!tm) return;
     timeRef.current = tm.tLast;
     setUiTime(tm.tLast);
-  }, [tm]);
+  }, [tm, day, app]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -209,10 +254,10 @@ export default function Dashboard() {
   const sinceNew = latest ? now - lastSeen : Infinity;
   const ageState = !latest ? 'none' : sinceNew > 120 * 60000 ? 'red' : sinceNew > 60 * 60000 ? 'amber' : 'ok';
   const pal = PALETTES[palette];
-  const watchCount = (latest?.systems ?? []).filter((s) => s.level !== 'cluster').length;
+  const watchCount = (frames[frames.length - 1]?.systems ?? []).filter((s) => s.level !== 'cluster').length;
   const estate = app?.estates.find((e) => e.slug === selected);
   const leadMin = tm ? Math.round((uiTime - tm.tLast) / 60000) : 0;
-  const hasChannel = frames.some((f) => f.channels[channel]);
+  const hasChannel = frames.some((f) => f.channels[channel] && tm && Date.parse(f.t) >= tm.t0);
 
   return (
     <div className="app">
@@ -252,7 +297,7 @@ export default function Dashboard() {
                 timeRef={timeRef}
                 frames={frames}
                 timeModel={tm}
-                grid={bundle?.grid ?? null}
+                grid={live ? (bundle?.grid ?? null) : null}
                 channel={channel}
                 domain={domain}
                 palette={palette}
@@ -312,7 +357,7 @@ export default function Dashboard() {
                   <div className="when num">{istDayTime(uiTime)} IST</div>
                   <div className="what">
                     <span className="kind" data-kind={kind}>
-                      {kind === 'observed' ? 'Observed' : kind === 'nowcast' ? `Nowcast +${leadMin} min` : 'Model forecast'}
+                      {kind === 'observed' ? (tm.live ? 'Observed' : 'Recorded') : kind === 'nowcast' ? `Nowcast +${leadMin} min` : 'Model forecast'}
                     </span>
                     <span>
                       {kind === 'observed'
@@ -358,12 +403,18 @@ export default function Dashboard() {
             {(!tm || !hasChannel) && (
               <div className="empty-map">
                 <div className="glass">
-                  {!app ? 'Loading…' : !tm ? `Fetching the first satellite frame from IMD. ${app.status.lastMessage}` : `No ${CHANNEL_LABEL[channel].toLowerCase()} frames in this period.`}
+                  {!app
+                    ? 'Loading…'
+                    : !tm || !latest
+                      ? `Fetching the first satellite frame from IMD. ${app.status.lastMessage}`
+                      : tm.live
+                        ? `No ${CHANNEL_LABEL[channel].toLowerCase()} frames yet today (Sri Lanka time). Use ‹ to look at an earlier day.`
+                        : `No ${CHANNEL_LABEL[channel].toLowerCase()} frames were recorded on ${app.day}.`}
                 </div>
               </div>
             )}
           </div>
-          {tm && (
+          {tm && app && (
             <Timeline
               tm={tm}
               frames={frames}
@@ -372,8 +423,10 @@ export default function Dashboard() {
               now={now}
               playing={playing}
               speed={speed}
-              hours={hours}
               smooth={smooth}
+              day={app.day}
+              today={app.today}
+              days={app.days}
               onSeek={seek}
               onPlay={(p) => {
                 if (p) liveRef.current = false;
@@ -382,7 +435,7 @@ export default function Dashboard() {
               onStep={step}
               onLive={goLive}
               onSpeed={setSpeed}
-              onHours={setHours}
+              onDay={pickDay}
               onSmooth={setSmooth}
             />
           )}
@@ -402,6 +455,7 @@ export default function Dashboard() {
           </div>
           <div className="side-scroll">
             {!app && <p className="note">Loading…</p>}
+            {app && !live && <p className="note">Showing {app.day} (Sri Lanka time). Risk badges and forecasts are always current.</p>}
             {app && tab === 'estates' && !estate && <EstateList app={app} selected={selected} onSelect={selectEstate} />}
             {app && tab === 'estates' && estate && (
               <>

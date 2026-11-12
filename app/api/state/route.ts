@@ -3,7 +3,7 @@ import { buildState } from '@/lib/server/state';
 
 export const dynamic = 'force-dynamic';
 
+/** `?day=YYYY-MM-DD` (Sri Lanka date) selects a past day; without it, today. */
 export async function GET(req: Request) {
-  const hours = Math.min(24 * 14, Math.max(1, Number(new URL(req.url).searchParams.get('hours')) || 24));
-  return NextResponse.json(await buildState(hours), { headers: { 'Cache-Control': 'no-store' } });
+  return NextResponse.json(await buildState(new URL(req.url).searchParams.get('day')), { headers: { 'Cache-Control': 'no-store' } });
 }

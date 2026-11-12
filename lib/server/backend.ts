@@ -80,8 +80,9 @@ export class FsBackend implements Backend {
 }
 
 // ── Vercel Blob ────────────────────────────────────────────────────────
-// Authenticated through BLOB_READ_WRITE_TOKEN (set automatically when a Blob store is attached to
-// the Vercel project). Overwritten objects can be served from the CDN for up to cacheControlMaxAge,
+// Authenticated by the SDK from the environment: BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID together
+// with Vercel's OIDC token (both set when a Blob store is connected to the Vercel project).
+// Overwritten objects can be served from the CDN for up to cacheControlMaxAge,
 // so mutable JSON is written with the minimum (60 s) and read with the cache bypassed.
 export class BlobBackend implements Backend {
   readonly kind = 'blob' as const;
@@ -132,9 +133,13 @@ const g = globalThis as unknown as { __lankamet_backend?: Backend; __lankamet_ba
 export function getBackend(): Backend {
   if (g.__lankamet_backend) return g.__lankamet_backend;
   g.__lankamet_backend_warning = null;
-  const want = process.env.LANKAMET_BACKEND ?? (process.env.BLOB_READ_WRITE_TOKEN ? 'blob' : 'fs');
+  // Two ways to reach a Blob store: a read-write token, or the store id plus Vercel's OIDC token.
+  // Vercel hands functions an OIDC token by itself; on a developer machine there is none unless
+  // `vercel env pull` wrote one, so a store id alone does not switch local runs to Blob.
+  const canBlob = !!process.env.BLOB_READ_WRITE_TOKEN || (!!process.env.BLOB_STORE_ID && (!!process.env.VERCEL || !!process.env.VERCEL_OIDC_TOKEN));
+  const want = process.env.LANKAMET_BACKEND ?? (canBlob ? 'blob' : 'fs');
   if (want === 'blob') {
-    if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error('LANKAMET_BACKEND=blob but BLOB_READ_WRITE_TOKEN is not set');
+    if (!canBlob) throw new Error('LANKAMET_BACKEND=blob needs BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID with VERCEL_OIDC_TOKEN');
     g.__lankamet_backend = new BlobBackend();
   } else if (process.env.VERCEL && !process.env.LANKAMET_STORAGE) {
     // serverless without a Blob store: the project folder is read-only, only /tmp can be written,

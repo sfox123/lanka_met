@@ -84,7 +84,8 @@ export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, 
   // two charts, two questions: what has the cloud been doing, and what is forecast
   const base = latest ? Date.parse(latest.t) : now;
   const satMin = Math.max(base - 9 * 3600e3, frames.length ? Date.parse(frames[0].t) - 900e3 : base - 3600e3);
-  const satMax = Math.max(now, base + (nc ? 180 : 30) * 60000) + 900e3;
+  // a past day ends at its last frame; only the live day runs on to "now" and the nowcast
+  const satMax = app.day === app.today ? Math.max(now, base + (nc ? 180 : 30) * 60000) + 900e3 : base + 30 * 60000;
   const fcMin = now - 2 * 3600e3;
   const fcMax = now + 24 * 3600e3;
   const satPanels = useMemo<Panel[]>(() => {
@@ -235,7 +236,7 @@ export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, 
             Nowcast confidence fades with lead time: about {pct(nowcastConfidence(60))} at +1 h, {pct(nowcastConfidence(120))} at +2 h, {pct(nowcastConfidence(180))} at +3 h.
           </p>
         ) : (
-          <p className="note" style={{ marginTop: 6 }}>The nowcast starts once two consecutive frames are available.</p>
+          <p className="note" style={{ marginTop: 6 }}>{app.day === app.today ? 'The nowcast starts once two consecutive frames are available.' : `Recorded frames from ${app.day}. The nowcast applies to today only.`}</p>
         )}
       </Card>
       <Card title="Next 24 hours" sub="Open-Meteo forecast, with the blended rain risk on top">
@@ -337,7 +338,7 @@ export function IslandPanel({ app, time, now, onSeek, onSelect }: { app: AppStat
   const base = latest ? Date.parse(latest.t) : 0;
   const nc = app.nowcast?.baseId === latest?.id ? app.nowcast : null;
   const tMin = frames.length ? Date.parse(frames[0].t) - 900e3 : now - 3600e3;
-  const tMax = Math.max(now, base + (nc ? 180 : 30) * 60000) + 900e3;
+  const tMax = app.day === app.today ? Math.max(now, base + (nc ? 180 : 30) * 60000) + 900e3 : base + 30 * 60000;
   const panels = useMemo<Panel[]>(
     () => [
       {

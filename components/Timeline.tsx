@@ -2,7 +2,7 @@
 
 import { useRef } from 'react';
 import { istHour, istTime, istWeekday } from '@/lib/client/format';
-import { posOf, timeOf, type TimeModel } from '@/lib/client/timeline';
+import { posOf, shiftDay, timeOf, type TimeModel } from '@/lib/client/timeline';
 import type { FrameMeta } from '@/lib/shared/types';
 
 interface Props {
@@ -13,24 +13,20 @@ interface Props {
   now: number;
   playing: boolean;
   speed: number;
-  hours: number;
   smooth: boolean;
+  /** Sri Lanka date shown, today's date, and the dates that have frames */
+  day: string;
+  today: string;
+  days: string[];
   onSeek: (t: number) => void;
   onPlay: (p: boolean) => void;
   onStep: (dir: -1 | 1) => void;
   onLive: () => void;
   onSpeed: (s: number) => void;
-  onHours: (h: number) => void;
+  onDay: (day: string) => void;
   onSmooth: (s: boolean) => void;
 }
 
-const RANGES: [number, string][] = [
-  [6, '6 h'],
-  [12, '12 h'],
-  [24, '24 h'],
-  [72, '3 d'],
-  [168, '7 d'],
-];
 const SPEEDS = [0.5, 1, 2, 4];
 
 function labels(tm: TimeModel): { t: number; text: string }[] {
@@ -71,6 +67,8 @@ export default function Timeline(p: Props) {
   const pc = (x: number) => `${(x * 100).toFixed(3)}%`;
   const { tm } = p;
   const nowPos = p.now >= tm.t0 && p.now <= tm.tModelEnd ? posOf(tm, p.now) : null;
+  const firstDay = p.days[0] && p.days[0] < p.day ? p.days[0] : p.day;
+  const isToday = p.day === p.today;
 
   return (
     <div className="timeline">
@@ -84,13 +82,14 @@ export default function Timeline(p: Props) {
         <button className="btn icon" onClick={() => p.onStep(1)} aria-label="Next frame" title="Next frame (→)">
           ⏭
         </button>
-        <button className="btn" onClick={p.onLive} title="Jump to the latest observation">
+        <button className="btn" onClick={p.onLive} title="Back to today and the latest observation">
           Latest
         </button>
       </div>
       <div
         ref={trackRef}
         className="track"
+        data-live={tm.live}
         role="slider"
         tabIndex={0}
         aria-label="Timeline"
@@ -119,7 +118,7 @@ export default function Timeline(p: Props) {
         {tm.pNow < 1 && <div className="band model" style={{ left: pc(tm.pNow), width: pc(1 - tm.pNow) }} />}
         {p.frames.map((f) => {
           const t = Date.parse(f.t);
-          return t >= tm.t0 && f.channels.ir1 ? <div key={f.id} className="frame-tick" data-loaded={p.loaded.has(f.id)} style={{ left: pc(posOf(tm, t)) }} /> : null;
+          return t >= tm.t0 && t <= tm.tLast && f.channels.ir1 ? <div key={f.id} className="frame-tick" data-loaded={p.loaded.has(f.id)} style={{ left: pc(posOf(tm, t)) }} /> : null;
         })}
         {labels(tm).map((l) => (
           <div key={l.t} className="lbl" style={{ left: pc(posOf(tm, l.t)) }}>
@@ -151,13 +150,17 @@ export default function Timeline(p: Props) {
           </span>
         )}
         <span style={{ flex: 1 }} />
-        <span>History</span>
-        <div className="seg" role="group" aria-label="History length">
-          {RANGES.map(([h, label]) => (
-            <button key={h} aria-pressed={p.hours === h} onClick={() => p.onHours(h)}>
-              {label}
-            </button>
-          ))}
+        <div className="daynav" role="group" aria-label="Day">
+          <button className="btn icon" onClick={() => p.onDay(shiftDay(p.day, -1))} disabled={p.day <= firstDay} aria-label="Previous day" title="Previous day">
+            ‹
+          </button>
+          <input type="date" value={p.day} min={firstDay} max={p.today} onChange={(e) => e.target.value && p.onDay(e.target.value)} aria-label="Day shown (Sri Lanka time)" />
+          <button className="btn icon" onClick={() => p.onDay(shiftDay(p.day, 1))} disabled={isToday} aria-label="Next day" title="Next day">
+            ›
+          </button>
+          <button className="btn" onClick={() => p.onDay(p.today)} disabled={isToday}>
+            Today
+          </button>
         </div>
         <span>Speed</span>
         <div className="seg" role="group" aria-label="Playback speed">

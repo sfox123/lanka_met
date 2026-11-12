@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "import-kml": "node scripts/import-kml.mjs",
+    "sync-blob": "node scripts/sync-to-blob.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

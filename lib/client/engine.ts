@@ -136,12 +136,14 @@ export class FieldEngine {
    * Render the field of `ch` at time tMs into `out` (domain-sized).
    * `smooth` turns motion interpolation on; off gives a plain frame-by-frame slideshow.
    */
-  render(frames: FrameMeta[], ch: Channel, domain: DomainId, tMs: number, smooth: boolean, out: Uint8Array): RenderInfo {
+  render(frames: FrameMeta[], ch: Channel, domain: DomainId, tMs: number, smooth: boolean, out: Uint8Array, extrapolate = true): RenderInfo {
     const list = frames.filter((f) => f.channels[ch]);
     if (!list.length) return { kind: 'none', ready: true, leadMin: 0 };
     const d = DOMAINS[domain];
     const last = list[list.length - 1];
     const lastMs = Date.parse(last.t);
+    // on a past day there is nothing to extrapolate into: hold the last frame
+    if (tMs > lastMs && !extrapolate) tMs = lastMs;
 
     if (tMs > lastMs) {
       // extrapolate the latest frame along the latest motion

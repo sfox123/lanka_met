@@ -535,6 +535,27 @@ p {
   border-radius: 2px;
   display: inline-block;
 }
+.daynav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.daynav input[type='date'] {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: var(--text);
+  color-scheme: dark;
+  font-variant-numeric: tabular-nums;
+}
+.daynav input[type='date']:hover {
+  border-color: var(--line-strong);
+}
+.daynav .btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .track {
   position: relative;
   height: 44px;

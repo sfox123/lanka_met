@@ -454,7 +454,7 @@ export default function MapView(props: MapViewProps) {
         const d = DOMAINS[p.domain];
         const key = `${Math.round(t / 1000)}|${p.channel}|${d.id}|${p.palette}|${p.smooth}|${p.engine.version}|${p.frames.length}`;
         if (key !== drawKey) {
-          const info = p.engine.render(p.frames, p.channel, d.id, t, p.smooth, buffers[d.id]);
+          const info = p.engine.render(p.frames, p.channel, d.id, t, p.smooth, buffers[d.id], p.timeModel.live);
           if (info.ready && info.kind !== 'none') {
             drawKey = key;
             const s = DISPLAY_SCALE[d.id];

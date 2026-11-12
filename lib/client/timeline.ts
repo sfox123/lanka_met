@@ -1,11 +1,14 @@
-// The timeline has up to three stretches with different meaning — and different width per hour,
-// because 3 hours of nowcast deserve more room than 3 hours of a 48-hour model outlook.
+// The timeline covers one Sri Lanka calendar day. Today ("live") runs from midnight to the latest
+// frame, then continues into the nowcast and the model forecast — each stretch with its own width
+// per hour, because 3 hours of nowcast deserve more room than 3 hours of a 48-hour outlook.
+// A past day is exactly 00:00–24:00 of observed frames.
 import { CFG } from '../shared/risk';
 import type { FrameMeta, GridForecast } from '../shared/types';
 
 export type TimeKind = 'observed' | 'nowcast' | 'model';
 
 export interface TimeModel {
+  live: boolean;
   t0: number;
   tLast: number;
   tNowcastEnd: number;
@@ -15,13 +18,21 @@ export interface TimeModel {
   pNow: number;
 }
 
-export function buildTimeModel(frames: FrameMeta[], grid: GridForecast | null): TimeModel | null {
+export interface DayWindow {
+  /** 00:00 and 24:00 of the day, UTC ms */
+  start: number;
+  end: number;
+  live: boolean;
+  /** current time (only used when the live day has no frames yet) */
+  now: number;
+}
+
+export function buildTimeModel(frames: FrameMeta[], grid: GridForecast | null, win: DayWindow): TimeModel {
+  if (!win.live) return { live: false, t0: win.start, tLast: win.end, tNowcastEnd: win.end, tModelEnd: win.end, pObs: 1, pNow: 1 };
   const ir = frames.filter((f) => f.channels.ir1 && f.status === 'ok');
-  if (!ir.length) return null;
-  const tLast = Date.parse(ir[ir.length - 1].t);
-  const first = Date.parse(ir[0].t);
-  // a single frame still gets a short stretch so the track has something to show
-  const t0 = first < tLast ? first : tLast - 30 * 60000;
+  const tLast = ir.length ? Date.parse(ir[ir.length - 1].t) : Math.max(win.start + 60000, win.now);
+  // the day's progress so far; if the only frames are from before midnight, start there instead
+  const t0 = Math.min(win.start, tLast - 30 * 60000);
   const hasNowcast = ir.length >= 2 && tLast - Date.parse(ir[ir.length - 2].t) <= 95 * 60000;
   const tNowcastEnd = hasNowcast ? tLast + CFG.nowcastLeads[CFG.nowcastLeads.length - 1] * 60000 : tLast;
   const gridEnd = grid?.time.length ? Date.parse(grid.time[grid.time.length - 1]) : 0;
@@ -31,7 +42,7 @@ export function buildTimeModel(frames: FrameMeta[], grid: GridForecast | null): 
   const wNow = hasNowcast ? 0.16 : 0;
   const wModel = hasModel ? 0.26 : 0;
   const sum = wObs + wNow + wModel;
-  return { t0, tLast, tNowcastEnd, tModelEnd, pObs: wObs / sum, pNow: (wObs + wNow) / sum };
+  return { live: true, t0, tLast, tNowcastEnd, tModelEnd, pObs: wObs / sum, pNow: (wObs + wNow) / sum };
 }
 
 export function posOf(tm: TimeModel, t: number): number {
@@ -65,4 +76,12 @@ export function gridHour(grid: GridForecast, t: number): number {
     }
   }
   return best;
+}
+
+const IST_MS = 5.5 * 3600e3;
+/** Sri Lanka calendar date (YYYY-MM-DD) of an instant. */
+export const istDate = (ms: number) => new Date(ms + IST_MS).toISOString().slice(0, 10);
+/** The Sri Lanka date `n` days after `day`. */
+export function shiftDay(day: string, n: number): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + n * 86400e3).toISOString().slice(0, 10);
 }
