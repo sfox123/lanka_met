@@ -78,7 +78,9 @@ storage/             raw frames (14 days), fields, index.json, forecast cache  (
 
 API: `GET /api/state?hours=24` · `GET /api/forecast` · `GET /api/field/{ir1|vis|wv}/{sl|region}/{id}` · `GET /api/estates/{slug}/csv` · `GET /api/ingest` (health) · `POST /api/ingest` (`?reprocess=1` rebuilds everything from the raw frames, `?forecast=1` forces an Open-Meteo refresh).
 
-Environment (all optional): `LANKAMET_STORAGE`, `LANKAMET_USER_AGENT` (put a contact email here before deploying), `IMD_BASE_URL`, `OPEN_METEO_BASE`, `NEXT_PUBLIC_MAP_STYLE_URL`, `LANKAMET_NO_SCHEDULER=1`.
+Environment (all optional): `OPEN_METEO_API_KEY` (a paid Open-Meteo key; switches to the `customer-api` endpoints — `OPEN_MET_KEY` is accepted too), `LANKAMET_STORAGE`, `LANKAMET_USER_AGENT` (put a contact email here before deploying), `IMD_BASE_URL`, `OPEN_METEO_BASE`, `NEXT_PUBLIC_MAP_STYLE_URL`, `LANKAMET_NO_SCHEDULER=1`. Put them in `.env` (git-ignored) or the host's environment settings.
+
+**Hosting:** the app needs a long-running Node process with a writable disk — it stores frames under `storage/` and polls IMD from an in-process scheduler. It runs on a VPS, Docker host, Railway, Render or Fly.io (mount a persistent volume at `storage/` or set `LANKAMET_STORAGE` to one). It does **not** run on serverless platforms such as Vercel or Netlify: their filesystem is read-only (`ENOENT … mkdir '/var/task/storage'`), functions are killed before the IMD download finishes, and nothing runs between requests. Deploying there needs the brief's original architecture (Supabase storage + external cron).
 
 ## Differences from the brief
 

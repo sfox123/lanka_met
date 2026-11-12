@@ -5,8 +5,12 @@ import { getMasks } from './masks';
 import { readJson, storagePath, writeJson } from './store';
 import type { Climatology, DailyForecast, EstateForecast, ForecastBundle, GridForecast, HourlyForecast, WeatherSystem } from '../shared/types';
 
-const BASE = process.env.OPEN_METEO_BASE ?? 'https://api.open-meteo.com';
-const ARCHIVE = process.env.OPEN_METEO_ARCHIVE ?? 'https://archive-api.open-meteo.com';
+// A paid Open-Meteo key (OPEN_METEO_API_KEY, or OPEN_MET_KEY) switches to the customer endpoints,
+// which carry the key as a query parameter and have far higher limits than the free tier.
+const KEY = process.env.OPEN_METEO_API_KEY ?? process.env.OPEN_MET_KEY ?? '';
+const BASE = process.env.OPEN_METEO_BASE ?? (KEY ? 'https://customer-api.open-meteo.com' : 'https://api.open-meteo.com');
+const ARCHIVE = process.env.OPEN_METEO_ARCHIVE ?? (KEY ? 'https://customer-archive-api.open-meteo.com' : 'https://archive-api.open-meteo.com');
+const DAILY_BUDGET = KEY ? 200000 : 8000;
 const REFRESH_MS = 3 * 3600 * 1000;
 const UA = { 'User-Agent': process.env.LANKAMET_USER_AGENT ?? 'LankaMet/0.1 (Sri Lanka cloud & rain dashboard)' };
 
@@ -43,9 +47,10 @@ const shared: Shared = (g.__lankamet_om ??= { bundle: null, pending: null, calls
 async function getJson(url: string, weight: number): Promise<any> {
   const day = new Date().toISOString().slice(0, 10);
   if (shared.callsToday.day !== day) shared.callsToday = { day, n: 0 };
-  // stay far below the 10,000 calls/day free-tier limit
-  if (shared.callsToday.n + weight > 8000) throw new Error('Open-Meteo daily call budget reached');
+  // stay far below the 10,000 calls/day free-tier limit (the paid tiers allow much more)
+  if (shared.callsToday.n + weight > DAILY_BUDGET) throw new Error('Open-Meteo daily call budget reached');
   shared.callsToday.n += weight;
+  if (KEY) url += `&apikey=${encodeURIComponent(KEY)}`;
   const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(45000) });
   if (!res.ok) throw new Error(`Open-Meteo ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return res.json();
