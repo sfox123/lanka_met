@@ -1,0 +1,26 @@
+{
+  "name": "lankamet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sri Lanka Cloud & Rain Watch — INSAT-3DS cloud analytics, nowcast and Open-Meteo forecasts for estates",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "import-kml": "node scripts/import-kml.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "maplibre-gl": "^5.6.0",
+    "next": "^15.3.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "sharp": "^0.34.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.7.0"
+  }
+}
