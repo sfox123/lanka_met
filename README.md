@@ -82,10 +82,10 @@ Environment (all optional): `OPEN_METEO_API_KEY` (a paid Open-Meteo key; switche
 
 ## Deploying on Vercel
 
-Serverless functions have no disk and do not run between requests, so on Vercel the app stores everything in **Vercel Blob** and is driven by an external cron. Local development is unchanged (files under `storage/`); the Blob backend switches on automatically when `BLOB_READ_WRITE_TOKEN` is present.
+Serverless functions have no disk and do not run between requests, so on Vercel the app stores everything in **Vercel Blob** and is driven by an external cron. Local development is unchanged (files under `storage/`); the Blob backend switches on automatically on Vercel when `BLOB_STORE_ID` (OIDC, set by current Blob connections) or `BLOB_READ_WRITE_TOKEN` is present. On a developer machine a store id alone is ignored, because there is no OIDC token to go with it. Stores are treated as private; set `LANKAMET_BLOB_ACCESS=public` for an older public store.
 
 1. **Import the repo** into a Vercel project (framework: Next.js, defaults are fine). `vercel.json` pins functions to Mumbai (`bom1`) so IMD downloads do not time out from the US.
-2. **Storage → Create → Blob**, and connect the store to the project. That gives the functions access (`BLOB_READ_WRITE_TOKEN`, or `BLOB_STORE_ID` with Vercel's OIDC token — either works).
+2. **Storage → Create → Blob**, and connect the store to the project. That sets `BLOB_STORE_ID` (the SDK authenticates with the deployment's OIDC token).
 3. **Environment variables:** `CRON_SECRET` (any long random string; protects the ingest endpoint) and `OPEN_METEO_API_KEY`. Redeploy after adding them.
 4. **Polling.** Vercel Cron only runs once a day on the Hobby plan, so the repo ships a GitHub Actions workflow (`.github/workflows/ingest.yml`) that calls `GET /api/ingest?run=1` every 10 minutes. In the GitHub repo add two **Actions secrets**: `LANKAMET_URL` (e.g. `https://lanka-met.vercel.app`) and `CRON_SECRET` (same value as on Vercel). On a Pro plan you can instead change the schedule in `vercel.json` to `*/5 * * * *`.
 5. Open `https://<app>/api/ingest` to see ingest health, or `…/api/ingest?run=1&key=<CRON_SECRET>` to run a pass by hand.

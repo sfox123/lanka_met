@@ -80,10 +80,13 @@ export class FsBackend implements Backend {
 }
 
 // ── Vercel Blob ────────────────────────────────────────────────────────
-// Authenticated by the SDK from the environment: BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID together
-// with Vercel's OIDC token (both set when a Blob store is connected to the Vercel project).
+// Authenticated either through OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID, which is what Vercel sets
+// when a Blob store is connected today) or a long-lived BLOB_READ_WRITE_TOKEN; the SDK picks
+// whichever is present. Stores are private by default (LANKAMET_BLOB_ACCESS=public for old ones).
 // Overwritten objects can be served from the CDN for up to cacheControlMaxAge,
 // so mutable JSON is written with the minimum (60 s) and read with the cache bypassed.
+const BLOB_ACCESS: 'public' | 'private' = process.env.LANKAMET_BLOB_ACCESS === 'public' ? 'public' : 'private';
+
 export class BlobBackend implements Backend {
   readonly kind = 'blob' as const;
 
@@ -93,7 +96,7 @@ export class BlobBackend implements Backend {
 
   async get(key: string, opts: { fresh?: boolean } = {}): Promise<Buffer | null> {
     const { get } = await this.sdk();
-    const res = await get(key, { access: 'public', useCache: !opts.fresh, abortSignal: AbortSignal.timeout(20000) });
+    const res = await get(key, { access: BLOB_ACCESS, useCache: !opts.fresh, abortSignal: AbortSignal.timeout(20000) });
     if (!res || !res.stream) return null;
     return Buffer.from(await new Response(res.stream).arrayBuffer());
   }
@@ -101,7 +104,7 @@ export class BlobBackend implements Backend {
   async put(key: string, data: Uint8Array, opts: PutOptions): Promise<void> {
     const { put } = await this.sdk();
     await put(key, Buffer.from(data.buffer, data.byteOffset, data.byteLength), {
-      access: 'public',
+      access: BLOB_ACCESS,
       addRandomSuffix: false,
       allowOverwrite: true,
       contentType: opts.contentType,
@@ -135,7 +138,8 @@ export function getBackend(): Backend {
   g.__lankamet_backend_warning = null;
   // Two ways to reach a Blob store: a read-write token, or the store id plus Vercel's OIDC token.
   // Vercel hands functions an OIDC token by itself; on a developer machine there is none unless
-  // `vercel env pull` wrote one, so a store id alone does not switch local runs to Blob.
+  // `vercel env pull` wrote one, so a store id alone (e.g. copied into .env) must not switch a
+  // local run to Blob — every read would fail for lack of a credential.
   const canBlob = !!process.env.BLOB_READ_WRITE_TOKEN || (!!process.env.BLOB_STORE_ID && (!!process.env.VERCEL || !!process.env.VERCEL_OIDC_TOKEN));
   const want = process.env.LANKAMET_BACKEND ?? (canBlob ? 'blob' : 'fs');
   if (want === 'blob') {

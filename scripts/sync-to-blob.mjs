@@ -38,6 +38,8 @@ if (!hasToken && !hasOidc) {
 }
 console.log(`Auth: ${hasToken ? 'read-write token' : 'OIDC token + store id'}`);
 const { put, list, get } = await import('@vercel/blob');
+// the store connected to the project is private; older stores can be public
+const ACCESS = process.env.LANKAMET_BLOB_ACCESS === 'public' ? 'public' : 'private';
 
 const storage = process.env.LANKAMET_STORAGE ?? path.join(root, 'storage');
 const force = process.argv.includes('--force');
@@ -74,7 +76,7 @@ let skipped = 0;
 let bytes = 0;
 async function upload(key, body, mutable) {
   await put(key, body, {
-    access: 'public',
+    access: ACCESS,
     addRandomSuffix: false,
     allowOverwrite: true,
     contentType: TYPES[path.extname(key)] ?? 'application/octet-stream',
@@ -109,7 +111,7 @@ const localIndexFile = path.join(storage, 'index.json');
 if (fs.existsSync(localIndexFile)) {
   const mine = JSON.parse(fs.readFileSync(localIndexFile, 'utf8'));
   let theirs = [];
-  const res = await get('index.json', { access: 'public', useCache: false });
+  const res = await get('index.json', { access: ACCESS, useCache: false });
   if (res?.stream) theirs = JSON.parse(await new Response(res.stream).text());
   const merged = new Map(theirs.map((f) => [f.id, f]));
   let added = 0;
