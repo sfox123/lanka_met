@@ -1,8 +1,9 @@
 // Everything the app keeps, as keys in the backend (see backend.ts):
-//   raw/{channel}/{id}.jpg              IMD frames exactly as downloaded (pruned after a few days)
-//   fields/{channel}/{domain}/{id}.webp cleaned, georeferenced 8-bit fields (kept)
+//   raw/{channel}/{id}.jpg              IMD frames exactly as downloaded
+//   fields/{channel}/{domain}/{id}.webp cleaned, georeferenced 8-bit fields
+//   (both deleted after keepHours() on Blob; locally raw is kept 14 days and fields stay)
 //   review/{channel}_{time}.jpg         frames that failed the layout check
-//   index.json                          one record per frame with all computed metrics (last 7 days)
+//   index.json                          one record per frame with all computed metrics (last keepHours())
 //   nowcast.json, forecast.json, climatology.json, ingest-state.json, ingest-status.json
 import sharp from 'sharp';
 import type { Channel, FrameMeta } from '../shared/types';
@@ -23,8 +24,16 @@ export const KEYS = {
 
 export const backendKind = () => getBackend().kind;
 
-/** Days of frames kept in index.json (the UI offers up to 7 days of history). */
-const INDEX_DAYS = Number(process.env.LANKAMET_INDEX_DAYS) || 7;
+/**
+ * How long frames are kept, in hours. Older frames are dropped from the index and their images
+ * deleted. Blob storage is metered, so production keeps 24 hours — exactly what the live view
+ * shows. A local folder keeps 7 days of index (and its images) unless LANKAMET_KEEP_HOURS says otherwise.
+ */
+export function keepHours(): number {
+  return Number(process.env.LANKAMET_KEEP_HOURS) || (backendKind() === 'blob' ? 24 : 7 * 24);
+}
+/** True when images older than keepHours() are deleted (always on Blob; locally only when asked). */
+export const deletesOldImages = () => backendKind() === 'blob' || !!Number(process.env.LANKAMET_KEEP_HOURS);
 /** How long a cached read of a mutable object may be reused before asking the store again. */
 const READ_TTL_MS = 20000;
 
@@ -71,7 +80,7 @@ export async function loadIndex(fresh = false): Promise<Map<string, FrameMeta>> 
 
 export async function saveIndex(): Promise<void> {
   const idx = await loadIndex();
-  const cutoff = Date.now() - INDEX_DAYS * 86400e3;
+  const cutoff = Date.now() - keepHours() * 3600e3;
   const list = [...idx.values()].filter((f) => Date.parse(f.t) >= cutoff).sort((a, b) => a.id.localeCompare(b.id));
   shared.index = new Map(list.map((f) => [f.id, f]));
   shared.indexReadAt = Date.now();

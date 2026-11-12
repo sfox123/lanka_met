@@ -1,7 +1,7 @@
 // Uploads the local storage/ folder to the Vercel Blob store used in production, so frames
 // recorded on this machine appear on the deployed dashboard.
 //
-//   npm run sync-blob            upload what the store does not have; merge the frame index
+//   npm run sync-blob            upload what the store does not have (last 24 hours); merge the frame index
 //   npm run sync-blob -- --force also overwrite the small JSON files (nowcast, poll state, ...)
 //
 // Needs write access to the store: either BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID together with
@@ -44,6 +44,14 @@ const ACCESS = process.env.LANKAMET_BLOB_ACCESS === 'public' ? 'public' : 'priva
 const storage = process.env.LANKAMET_STORAGE ?? path.join(root, 'storage');
 const force = process.argv.includes('--force');
 const IMMUTABLE = /^(raw|fields)\//;
+// production keeps this many hours of frames (see keepHours() in lib/server/store.ts); older
+// local frames would be deleted again on the next ingest pass, so they are not uploaded
+const KEEP_HOURS = Number(process.env.LANKAMET_KEEP_HOURS) || 24;
+const cutoff = Date.now() - KEEP_HOURS * 3600e3;
+const frameTime = (key) => {
+  const m = /\/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\.(?:jpg|webp)$/.exec(key);
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null;
+};
 const SKIP = /^(review\/|index\.json$)|\.tmp$|^\./;
 const TYPES = { '.jpg': 'image/jpeg', '.webp': 'image/webp', '.json': 'application/json' };
 
@@ -87,7 +95,10 @@ async function upload(key, body, mutable) {
 }
 
 // frames and fields: upload whatever the store lacks (same key + same size counts as present)
-const queue = local.filter((f) => !SKIP.test(f.key));
+const tooOld = (f) => IMMUTABLE.test(f.key) && (frameTime(f.key) ?? Infinity) < cutoff;
+const queue = local.filter((f) => !SKIP.test(f.key) && !tooOld(f));
+const aged = local.filter(tooOld).length;
+if (aged) console.log(`  ${aged} local files are older than ${KEEP_HOURS} h and are left out`);
 for (let i = 0; i < queue.length; i += 4) {
   await Promise.all(
     queue.slice(i, i + 4).map(async (f) => {
@@ -124,7 +135,6 @@ if (fs.existsSync(localIndexFile)) {
     else continue;
     merged.set(f.id, f);
   }
-  const cutoff = Date.now() - (Number(process.env.LANKAMET_INDEX_DAYS) || 7) * 86400e3;
   const out = [...merged.values()].filter((f) => Date.parse(f.t) >= cutoff).sort((a, b) => a.id.localeCompare(b.id));
   await upload('index.json', Buffer.from(JSON.stringify(out)), true);
   console.log(`  index.json: ${theirs.length} remote + ${mine.length} local → ${out.length} frames (${added} added, ${replaced} replaced)`);

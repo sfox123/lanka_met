@@ -86,21 +86,25 @@ const IST_MS = 5.5 * 3600e3;
 /** Sri Lanka calendar date (YYYY-MM-DD) of an instant. */
 export const istDate = (ms: number) => new Date(ms + IST_MS).toISOString().slice(0, 10);
 
+/** Length of the live view. */
+export const LIVE_HOURS = 24;
+
 /**
- * Dashboard payload for one Sri Lanka calendar day. Today ("live") also includes the previous
- * six hours so the charts have context just after midnight; a past day is exactly 00:00–24:00.
+ * Dashboard payload. Without a day (or with today's date) it is the live view: the last 24 hours
+ * up to now. With an earlier Sri Lanka date it is that calendar day, 00:00–24:00.
  */
 export async function buildState(day?: string | null): Promise<AppState> {
   const nowMs = Date.now();
   const all = await listFrames();
   const today = istDate(nowMs);
   const d = day && /^\d{4}-\d{2}-\d{2}$/.test(day) && day < today ? day : today;
-  const dayStart = Date.parse(`${d}T00:00:00Z`) - IST_MS;
-  const dayEnd = dayStart + 86400e3;
-  const from = d === today ? Math.min(dayStart, nowMs - 6 * 3600e3) : dayStart;
+  const live = d === today;
+  const liveStart = nowMs - LIVE_HOURS * 3600e3;
+  const dayStart = live ? liveStart : Date.parse(`${d}T00:00:00Z`) - IST_MS;
+  const dayEnd = live ? nowMs : dayStart + 86400e3;
   const frames = all.filter((f) => {
     const t = Date.parse(f.t);
-    return t >= from && t < dayEnd;
+    return t >= dayStart && t <= dayEnd;
   });
   const ok = all.filter((f) => f.status === 'ok' && f.channels.ir1);
   const newest = ok[ok.length - 1];
@@ -114,6 +118,7 @@ export async function buildState(day?: string | null): Promise<AppState> {
     dayEnd: new Date(dayEnd).toISOString(),
     today,
     days: [...new Set(ok.map((f) => istDate(Date.parse(f.t))))].sort(),
+    hasOlder: ok.some((f) => Date.parse(f.t) < liveStart),
     latest: newest ? { id: newest.id, t: newest.t, fetchedAt: newest.fetchedAt } : null,
     frames,
     estates,

@@ -1,7 +1,7 @@
-// The timeline covers one Sri Lanka calendar day. Today ("live") runs from midnight to the latest
-// frame, then continues into the nowcast and the model forecast — each stretch with its own width
-// per hour, because 3 hours of nowcast deserve more room than 3 hours of a 48-hour outlook.
-// A past day is exactly 00:00–24:00 of observed frames.
+// Live, the timeline covers the last 24 hours of frames (starting at the oldest one available,
+// so the track is never mostly empty), then continues into the nowcast and the model forecast —
+// each stretch with its own width per hour, because 3 hours of nowcast deserve more room than
+// 3 hours of a 48-hour outlook. A past day is exactly 00:00–24:00 of recorded frames.
 import { CFG } from '../shared/risk';
 import type { FrameMeta, GridForecast } from '../shared/types';
 
@@ -19,7 +19,7 @@ export interface TimeModel {
 }
 
 export interface DayWindow {
-  /** 00:00 and 24:00 of the day, UTC ms */
+  /** bounds of the view, UTC ms: now−24 h … now when live, 00:00 … 24:00 for a past day */
   start: number;
   end: number;
   live: boolean;
@@ -29,10 +29,10 @@ export interface DayWindow {
 
 export function buildTimeModel(frames: FrameMeta[], grid: GridForecast | null, win: DayWindow): TimeModel {
   if (!win.live) return { live: false, t0: win.start, tLast: win.end, tNowcastEnd: win.end, tModelEnd: win.end, pObs: 1, pNow: 1 };
-  const ir = frames.filter((f) => f.channels.ir1 && f.status === 'ok');
-  const tLast = ir.length ? Date.parse(ir[ir.length - 1].t) : Math.max(win.start + 60000, win.now);
-  // the day's progress so far; if the only frames are from before midnight, start there instead
-  const t0 = Math.min(win.start, tLast - 30 * 60000);
+  const ir = frames.filter((f) => f.channels.ir1 && f.status === 'ok' && Date.parse(f.t) >= win.start);
+  const tLast = ir.length ? Date.parse(ir[ir.length - 1].t) : win.now;
+  // start at the oldest frame in the window; a lone frame still gets a short stretch to sit on
+  const t0 = Math.min(ir.length ? Date.parse(ir[0].t) : tLast, tLast - 30 * 60000);
   const hasNowcast = ir.length >= 2 && tLast - Date.parse(ir[ir.length - 2].t) <= 95 * 60000;
   const tNowcastEnd = hasNowcast ? tLast + CFG.nowcastLeads[CFG.nowcastLeads.length - 1] * 60000 : tLast;
   const gridEnd = grid?.time.length ? Date.parse(grid.time[grid.time.length - 1]) : 0;

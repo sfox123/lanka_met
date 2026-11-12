@@ -36,7 +36,7 @@ Everything is stored under `storage/` (git-ignored). Delete that folder to start
 ### The dashboard
 
 - **Map** — Sri Lanka or Indian Ocean view; infrared / visible / water vapour; four colourings (enhanced, rain potential, natural, plain satellite picture); opacity; motion streaks; estates coloured by risk. Hover anywhere for the value under the pointer.
-- **Timeline** — one Sri Lanka calendar day at a time. Today runs from midnight to the latest frame and grows through the day, then continues into the nowcast (+3 h) and the model (+48 h), each in its own colour. The date picker (with ‹ › and *Today*) opens any earlier day in the index as a plain 00:00–24:00 track of recorded frames. Play, step, speed. *Smooth motion* glides clouds between frames; *Slideshow* shows only the real frames. Space plays/pauses, ←/→ step.
+- **Timeline** — live, it shows the last 24 hours of frames (starting at the oldest one available), then continues into the nowcast (+3 h) and the model (+48 h), each in its own colour. When the store holds frames older than that — a local folder keeps 7 days — a date picker (with ‹ › and *Live*) opens an earlier Sri Lanka day as a plain 00:00–24:00 track of recorded frames. Play, step, speed. *Smooth motion* glides clouds between frames; *Slideshow* shows only the real frames. Space plays/pauses, ←/→ step.
 - **Estates tab** — list sorted by 3-hour risk; click one for its risk, cloud history and nowcast, 24-hour forecast, 7-day outlook, comparison with a normal week, land use, and a CSV download.
 - **Island tab** — island cloud cover and cold-top share over time, estate × time heat map, and the thresholds in use.
 - **Systems tab** — the cluster list with score breakdown; click to fly there.
@@ -76,9 +76,9 @@ data/                estate KML files and the generated estates.json
 storage/             raw frames (14 days), fields, index.json, forecast cache  (git-ignored)
 ```
 
-API: `GET /api/state` (today) or `?day=YYYY-MM-DD` (Sri Lanka date) · `GET /api/forecast` · `GET /api/field/{ir1|vis|wv}/{sl|region}/{id}` · `GET /api/estates/{slug}/csv` · `GET /api/ingest` (health) · `POST /api/ingest` (`?reprocess=1` rebuilds everything from the raw frames, `?forecast=1` forces an Open-Meteo refresh).
+API: `GET /api/state` (live: the last 24 hours) or `?day=YYYY-MM-DD` (an earlier Sri Lanka date) · `GET /api/forecast` · `GET /api/field/{ir1|vis|wv}/{sl|region}/{id}` · `GET /api/estates/{slug}/csv` · `GET /api/ingest` (health) · `POST /api/ingest` (`?reprocess=1` rebuilds everything from the raw frames, `?forecast=1` forces an Open-Meteo refresh).
 
-Environment (all optional): `OPEN_METEO_API_KEY` (a paid Open-Meteo key; switches to the `customer-api` endpoints — `OPEN_MET_KEY` is accepted too), `LANKAMET_STORAGE`, `LANKAMET_USER_AGENT` (put a contact email here before deploying), `IMD_BASE_URL`, `OPEN_METEO_BASE`, `NEXT_PUBLIC_MAP_STYLE_URL`, `LANKAMET_NO_SCHEDULER=1`. Put them in `.env` (git-ignored) or the host's environment settings.
+Environment (all optional): `LANKAMET_KEEP_HOURS` (retention, see Deploying on Vercel), `LANKAMET_BACKEND=blob` (make a local run use the Blob store), `NEXT_DIST_DIR` (separate build folder, so a build or second server can run beside `npm run dev`), `OPEN_METEO_API_KEY` (a paid Open-Meteo key; switches to the `customer-api` endpoints — `OPEN_MET_KEY` is accepted too), `LANKAMET_STORAGE`, `LANKAMET_USER_AGENT` (put a contact email here before deploying), `IMD_BASE_URL`, `OPEN_METEO_BASE`, `NEXT_PUBLIC_MAP_STYLE_URL`, `LANKAMET_NO_SCHEDULER=1`. Put them in `.env` (git-ignored) or the host's environment settings.
 
 ## Deploying on Vercel
 
@@ -90,9 +90,11 @@ Serverless functions have no disk and do not run between requests, so on Vercel 
 4. **Polling.** Vercel Cron only runs once a day on the Hobby plan, so the repo ships a GitHub Actions workflow (`.github/workflows/ingest.yml`) that calls `GET /api/ingest?run=1` every 10 minutes. In the GitHub repo add two **Actions secrets**: `LANKAMET_URL` (e.g. `https://lanka-met.vercel.app`) and `CRON_SECRET` (same value as on Vercel). On a Pro plan you can instead change the schedule in `vercel.json` to `*/5 * * * *`.
 5. Open `https://<app>/api/ingest` to see ingest health, or `…/api/ingest?run=1&key=<CRON_SECRET>` to run a pass by hand.
 
-One pass (three HEADs, up to three downloads, analysis, nowcast) takes 10–25 s and must finish inside the function's 60 s limit. GitHub's schedule can drift by several minutes, so expect frames to appear 45–60 min after their scan time. Each day adds roughly 100 MB of raw frames (kept 3 days on Blob) and 12 MB of fields (kept) — check the Blob quota of your plan.
+One pass (three HEADs, up to three downloads, analysis, nowcast) takes 10–25 s and must finish inside the function's 60 s limit. GitHub's schedule can drift by several minutes, so expect frames to appear 45–60 min after their scan time.
 
-**Uploading frames recorded locally.** `npm run sync-blob` copies this machine's `storage/` (raw frames and fields) to the Blob store and merges the frame index with production's, so nothing production recorded is lost. It needs write access: run `npx vercel link` and `npx vercel env pull .env.local` first (the pulled token lasts about 12 hours), or put `BLOB_READ_WRITE_TOKEN` in `.env.local`. A `BLOB_STORE_ID` alone only names the store. `--force` also overwrites the small state files.
+**Retention.** On Blob the app keeps 24 hours of frames: whenever a new frame is stored, raw frames, fields and index entries older than that are deleted, so the store stays at roughly 110 MB (48 frames × 3 channels). Change it with `LANKAMET_KEEP_HOURS`. A local folder keeps 7 days of index, 14 days of raw frames and all fields unless that variable is set.
+
+**Uploading frames recorded locally.** `npm run sync-blob` copies the last 24 hours of this machine's `storage/` (raw frames and fields) to the Blob store and merges the frame index with production's, so nothing production recorded is lost. It needs write access, one of: (a) connect the store to the project's **Development** environment as well (Vercel → Storage → the store → Projects), then `npx vercel link` — the token it writes to `.env.local` lasts about 12 hours and is only accepted for environments the store is connected to; or (b) put a `BLOB_READ_WRITE_TOKEN` in `.env.local`. A `BLOB_STORE_ID` alone only names the store. `--force` also overwrites the small state files.
 
 Known limits of the serverless setup: two overlapping passes (e.g. a manual run during the cron tick) can both write `index.json`; the later write wins and may drop the other's frame. A dropped frame is picked up again by `?reprocess=1`, which rebuilds everything from the stored raw frames.
 

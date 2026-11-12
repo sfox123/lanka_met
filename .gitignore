@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.next-*/
 next-env.d.ts
 *.tsbuildinfo
 .env
@@ -7,3 +8,6 @@ next-env.d.ts
 
 # Satellite frames, derived fields and forecast caches (rebuilt by the ingest)
 storage/
+
+.vercel
+.env*

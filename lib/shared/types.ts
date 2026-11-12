@@ -200,7 +200,10 @@ export interface IngestStatus {
 
 export interface AppState {
   now: string;
-  /** Sri Lanka calendar day shown (YYYY-MM-DD) and its bounds as ISO UTC */
+  /**
+   * Sri Lanka date shown (YYYY-MM-DD) and the bounds of the view as ISO UTC. For today the view
+   * is live: the last 24 hours up to now. For an earlier date it is that day, 00:00–24:00.
+   */
   day: string;
   dayStart: string;
   dayEnd: string;
@@ -208,9 +211,11 @@ export interface AppState {
   today: string;
   /** Sri Lanka dates that have frames in the index, oldest first */
   days: string[];
+  /** true when the index holds frames older than the live view (so a date picker is worth showing) */
+  hasOlder: boolean;
   /** newest frame overall, regardless of the day shown */
   latest: { id: string; t: string; fetchedAt: string } | null;
-  /** frames of the selected day (for today: plus the previous 6 hours, so charts have context) */
+  /** frames inside the view */
   frames: FrameMeta[];
   estates: Estate[];
   estateState: EstateState[];

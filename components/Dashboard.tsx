@@ -23,7 +23,7 @@ export default function Dashboard() {
   const [app, setApp] = useState<AppState | null>(null);
   const [bundle, setBundle] = useState<ForecastBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** Sri Lanka date to show; null = today */
+  /** Sri Lanka date to show; null = live (the last 24 hours) */
   const [day, setDay] = useState<string | null>(null);
   const [channel, setChannel] = useState<Channel>('ir1');
   const [domain, setDomain] = useState<DomainId>('sl');
@@ -408,7 +408,7 @@ export default function Dashboard() {
                     : !tm || !latest
                       ? `Fetching the first satellite frame from IMD. ${app.status.lastMessage}`
                       : tm.live
-                        ? `No ${CHANNEL_LABEL[channel].toLowerCase()} frames yet today (Sri Lanka time). Use ‹ to look at an earlier day.`
+                        ? `No ${CHANNEL_LABEL[channel].toLowerCase()} frames in the last 24 hours.${app.hasOlder ? ' Use the date picker to open an earlier day.' : ''}`
                         : `No ${CHANNEL_LABEL[channel].toLowerCase()} frames were recorded on ${app.day}.`}
                 </div>
               </div>
@@ -427,6 +427,7 @@ export default function Dashboard() {
               day={app.day}
               today={app.today}
               days={app.days}
+              showDays={app.hasOlder || !live}
               onSeek={seek}
               onPlay={(p) => {
                 if (p) liveRef.current = false;

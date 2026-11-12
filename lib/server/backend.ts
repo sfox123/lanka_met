@@ -137,13 +137,15 @@ export function getBackend(): Backend {
   if (g.__lankamet_backend) return g.__lankamet_backend;
   g.__lankamet_backend_warning = null;
   // Two ways to reach a Blob store: a read-write token, or the store id plus Vercel's OIDC token.
-  // Vercel hands functions an OIDC token by itself; on a developer machine there is none unless
-  // `vercel env pull` wrote one, so a store id alone (e.g. copied into .env) must not switch a
-  // local run to Blob — every read would fail for lack of a credential.
-  const canBlob = !!process.env.BLOB_READ_WRITE_TOKEN || (!!process.env.BLOB_STORE_ID && (!!process.env.VERCEL || !!process.env.VERCEL_OIDC_TOKEN));
-  const want = process.env.LANKAMET_BACKEND ?? (canBlob ? 'blob' : 'fs');
+  // On Vercel the store id is enough (functions get an OIDC token by themselves). A developer
+  // machine keeps using the local folder even when `vercel link` / `vercel env pull` has left a
+  // store id and an OIDC token in the env files — otherwise `npm run dev` would silently read
+  // and write the production store. Set LANKAMET_BACKEND=blob to opt in.
+  const hasCredential = !!process.env.BLOB_READ_WRITE_TOKEN || (!!process.env.BLOB_STORE_ID && (!!process.env.VERCEL || !!process.env.VERCEL_OIDC_TOKEN));
+  const auto = !!process.env.BLOB_READ_WRITE_TOKEN || (!!process.env.BLOB_STORE_ID && !!process.env.VERCEL);
+  const want = process.env.LANKAMET_BACKEND ?? (auto ? 'blob' : 'fs');
   if (want === 'blob') {
-    if (!canBlob) throw new Error('LANKAMET_BACKEND=blob needs BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID with VERCEL_OIDC_TOKEN');
+    if (!hasCredential) throw new Error('LANKAMET_BACKEND=blob needs BLOB_READ_WRITE_TOKEN, or BLOB_STORE_ID with VERCEL_OIDC_TOKEN');
     g.__lankamet_backend = new BlobBackend();
   } else if (process.env.VERCEL && !process.env.LANKAMET_STORAGE) {
     // serverless without a Blob store: the project folder is read-only, only /tmp can be written,

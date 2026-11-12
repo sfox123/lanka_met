@@ -11,14 +11,14 @@ import { getMasks } from './masks';
 import { annotateSystems } from './openmeteo';
 import { readHeaderTime } from './header-time';
 import { calibrate, cleanBox, decodeJpeg, fieldDifference, resample } from './process';
-import { KEYS, backendKind, clearFieldCache, dateFromId, deleteKeys, getBytes, idFromDate, listFrames, listKeys, loadField, loadIndex, putBytes, readJson, saveField, saveIndex, writeJson } from './store';
+import { KEYS, backendKind, clearFieldCache, dateFromId, deleteKeys, deletesOldImages, getBytes, idFromDate, keepHours, listFrames, listKeys, loadField, loadIndex, putBytes, readJson, saveField, saveIndex, writeJson } from './store';
 import { detectSystems } from './systems';
 
 const IMD_BASE = process.env.IMD_BASE_URL ?? 'https://mausam.imd.gov.in/Satellite/';
 const UA = process.env.LANKAMET_USER_AGENT ?? 'LankaMet/0.1 (Sri Lanka cloud & rain dashboard)';
 const ON_VERCEL = !!process.env.VERCEL;
-/** Raw frames are only needed for a reprocess; blob storage is metered, so keep fewer there. */
-const RAW_RETENTION_DAYS = Number(process.env.LANKAMET_RAW_DAYS) || (ON_VERCEL ? 3 : 14);
+/** Local folder only: raw frames are needed just for a reprocess, so they go after two weeks. */
+const LOCAL_RAW_DAYS = Number(process.env.LANKAMET_RAW_DAYS) || 14;
 /** IMD publishes a frame 40–45 min after its scan starts. */
 const PUBLISH_LAG_MIN = 40;
 // a serverless pass has about 60 s in total, so each IMD request gets less rope there
@@ -244,13 +244,38 @@ function parseRawKey(key: string): { ch: Channel; id: string } | null {
   return m ? { ch: m[1] as Channel, id: m[2] } : null;
 }
 
-async function pruneRaw(): Promise<void> {
-  const cutoff = Date.now() - RAW_RETENTION_DAYS * 86400e3;
-  const old = (await listKeys('raw/')).filter((e) => {
-    const p = parseRawKey(e.key);
-    return p && dateFromId(p.id).getTime() < cutoff;
-  });
-  await deleteKeys(old.map((e) => e.key));
+/** Scan time encoded in a raw or field key, or null. */
+function frameTimeOfKey(key: string): number | null {
+  const m = /^(?:raw\/(?:ir1|vis|wv)|fields\/(?:ir1|vis|wv)\/(?:sl|region))\/(\d{8}_\d{4})\.(?:jpg|webp)$/.exec(key);
+  return m ? dateFromId(m[1]).getTime() : null;
+}
+
+/**
+ * Delete what has aged out. With image deletion on (always on Blob), raw frames, fields and
+ * rejected frames older than keepHours() go — the index drops the same frames in saveIndex().
+ * Otherwise (local folder, default) only raw frames older than two weeks are removed.
+ * Returns the number of objects deleted.
+ */
+async function prune(): Promise<number> {
+  const old: string[] = [];
+  if (deletesOldImages()) {
+    const cutoff = Date.now() - keepHours() * 3600e3;
+    for (const prefix of ['raw/', 'fields/']) {
+      for (const e of await listKeys(prefix)) {
+        const t = frameTimeOfKey(e.key);
+        if (t != null && t < cutoff) old.push(e.key);
+      }
+    }
+    for (const e of await listKeys('review/')) if (Date.parse(e.uploadedAt) < cutoff) old.push(e.key);
+  } else {
+    const cutoff = Date.now() - LOCAL_RAW_DAYS * 86400e3;
+    for (const e of await listKeys('raw/')) {
+      const p = parseRawKey(e.key);
+      if (p && dateFromId(p.id).getTime() < cutoff) old.push(e.key);
+    }
+  }
+  await deleteKeys(old);
+  return old.length;
 }
 
 /**
@@ -357,8 +382,11 @@ export function runIngest(opts: { reprocess?: boolean; offline?: boolean } = {})
       const filled = await backfill(!!opts.reprocess);
       const notes = opts.offline ? [] : await pollImd();
       if (filled || notes.length || !(await getNowcast())) await buildNowcast();
-      if (notes.length || backendKind() === 'fs') await pruneRaw();
-      const message = [filled ? `${filled} raw file(s) processed from the store` : '', ...notes].filter(Boolean).join('; ') || 'no new frames';
+      // listing a Blob store costs API calls, so only tidy up there when a new frame has arrived
+      const removed = notes.length || backendKind() === 'fs' ? await prune() : 0;
+      // the index must not keep pointing at images that were just deleted
+      if (removed && deletesOldImages()) await saveIndex();
+      const message = [filled ? `${filled} raw file(s) processed from the store` : '', ...notes, removed ? `${removed} old file(s) deleted` : ''].filter(Boolean).join('; ') || 'no new frames';
       await log(true, message);
       return message;
     } catch (err) {

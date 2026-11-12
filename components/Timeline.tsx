@@ -18,6 +18,8 @@ interface Props {
   day: string;
   today: string;
   days: string[];
+  /** show the date picker: frames older than the live 24 hours exist, or a past day is open */
+  showDays: boolean;
   onSeek: (t: number) => void;
   onPlay: (p: boolean) => void;
   onStep: (dir: -1 | 1) => void;
@@ -150,6 +152,9 @@ export default function Timeline(p: Props) {
           </span>
         )}
         <span style={{ flex: 1 }} />
+        {!tm.live && <span>Recorded day</span>}
+        {tm.live && <span title="The live view always shows the most recent 24 hours of frames">Last 24 h</span>}
+        {p.showDays && (
         <div className="daynav" role="group" aria-label="Day">
           <button className="btn icon" onClick={() => p.onDay(shiftDay(p.day, -1))} disabled={p.day <= firstDay} aria-label="Previous day" title="Previous day">
             ‹
@@ -158,10 +163,11 @@ export default function Timeline(p: Props) {
           <button className="btn icon" onClick={() => p.onDay(shiftDay(p.day, 1))} disabled={isToday} aria-label="Next day" title="Next day">
             ›
           </button>
-          <button className="btn" onClick={() => p.onDay(p.today)} disabled={isToday}>
-            Today
+          <button className="btn" onClick={() => p.onDay(p.today)} disabled={isToday} title="Back to the live last-24-hours view">
+            Live
           </button>
         </div>
+        )}
         <span>Speed</span>
         <div className="seg" role="group" aria-label="Playback speed">
           {SPEEDS.map((s) => (
