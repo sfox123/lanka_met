@@ -8,9 +8,9 @@ import { buildTimeModel, kindAt } from '@/lib/client/timeline';
 import type { DomainId } from '@/lib/shared/geo';
 import { PALETTES, paletteGradient, type PaletteId } from '@/lib/shared/palettes';
 import { CFG, nowcastConfidence } from '@/lib/shared/risk';
-import { CHANNELS, CHANNEL_LABEL, type AppState, type Channel, type ForecastBundle, type WeatherSystem } from '@/lib/shared/types';
+import { CHANNELS, CHANNEL_LABEL, type AppState, type Channel, type EstateForecast, type ForecastBundle, type WeatherSystem } from '@/lib/shared/types';
 import CaveatsModal from './CaveatsModal';
-import { ClimateCard, EstateDetail, EstateList, IslandPanel, SystemsPanel } from './Panels';
+import { ClimateCard, EstateDetail, EstateList, IslandPanel, PointDetail, SystemsPanel } from './Panels';
 import Timeline from './Timeline';
 
 const MapView = dynamic(() => import('./MapView'), { ssr: false });
@@ -36,6 +36,9 @@ export default function Dashboard() {
   const [speed, setSpeed] = useState(1);
   const [tab, setTab] = useState<Tab>('estates');
   const [selected, setSelected] = useState<string | null>(null);
+  /** a place picked on the map (any point over Sri Lanka) and the forecast fetched for it */
+  const [point, setPoint] = useState<{ lon: number; lat: number } | null>(null);
+  const [pointFc, setPointFc] = useState<{ data: EstateForecast | null; error: string | null }>({ data: null, error: null });
   const [focusSystem, setFocusSystem] = useState<WeatherSystem | null>(null);
   const [about, setAbout] = useState(false);
   const [uiTime, setUiTime] = useState(0);
@@ -82,6 +85,30 @@ export default function Dashboard() {
     if (bundle?.fetchedAt && app && app.forecastFetchedAt !== bundle.fetchedAt) void loadState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bundle?.fetchedAt]);
+
+  // forecast for the picked point, refreshed every 30 minutes while it stays selected
+  useEffect(() => {
+    setPointFc({ data: null, error: null });
+    if (!point) return;
+    const ctl = new AbortController();
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/point?lat=${point.lat.toFixed(2)}&lon=${point.lon.toFixed(2)}`, { signal: ctl.signal });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+        setPointFc({ data: body, error: null });
+      } catch (err) {
+        // keep a forecast already shown; report the failure only when there is nothing to show
+        if (!ctl.signal.aborted) setPointFc((cur) => (cur.data ? cur : { data: null, error: (err as Error).message }));
+      }
+    };
+    void load();
+    const id = setInterval(load, 30 * 60000);
+    return () => {
+      ctl.abort();
+      clearInterval(id);
+    };
+  }, [point]);
 
   const live = !app || !day || day === app.today;
   const frames = useMemo(() => (app?.frames ?? []).filter((f) => f.status === 'ok'), [app]);
@@ -231,7 +258,13 @@ export default function Dashboard() {
   };
   const selectEstate = useCallback((slug: string | null) => {
     setSelected(slug);
+    setPoint(null);
     if (slug) setTab('estates');
+  }, []);
+  const pickPoint = useCallback((lon: number, lat: number) => {
+    setSelected(null);
+    setPoint({ lon, lat });
+    setTab('estates');
   }, []);
   const focusOn = useCallback((s: WeatherSystem) => {
     setDomain('region');
@@ -309,6 +342,8 @@ export default function Dashboard() {
                 estateState={app?.estateState ?? []}
                 selected={selected}
                 onSelect={selectEstate}
+                point={point}
+                onPoint={pickPoint}
                 onSystem={onSystem}
                 focusSystem={focusSystem}
               />
@@ -357,7 +392,7 @@ export default function Dashboard() {
                   <div className="when num">{istDayTime(uiTime)} IST</div>
                   <div className="what">
                     <span className="kind" data-kind={kind}>
-                      {kind === 'observed' ? (tm.live ? 'Observed' : 'Recorded') : kind === 'nowcast' ? `Nowcast +${leadMin} min` : 'Model forecast'}
+                      {kind === 'observed' ? (tm.live ? 'Observed' : 'Recorded') : kind === 'nowcast' ? `Nowcast +${leadMin} min` : uiTime <= tm.tLast ? 'Model · no satellite image' : 'Model forecast'}
                     </span>
                     <span>
                       {kind === 'observed'
@@ -457,7 +492,10 @@ export default function Dashboard() {
           <div className="side-scroll">
             {!app && <p className="note">Loading…</p>}
             {app && !live && <p className="note">Showing {app.day} (Sri Lanka time). Risk badges and forecasts are always current.</p>}
-            {app && tab === 'estates' && !estate && <EstateList app={app} selected={selected} onSelect={selectEstate} />}
+            {app && tab === 'estates' && !estate && !point && <EstateList app={app} selected={selected} onSelect={selectEstate} />}
+            {app && tab === 'estates' && !estate && point && (
+              <PointDetail point={point} engine={engine} version={version} app={app} live={live} forecast={pointFc.data} forecastError={pointFc.error} time={uiTime} now={now} onSeek={seek} onBack={() => setPoint(null)} />
+            )}
             {app && tab === 'estates' && estate && (
               <>
                 <EstateDetail estate={estate} state={app.estateState.find((s) => s.slug === estate.slug)} app={app} forecast={bundle?.estates.find((e) => e.slug === estate.slug)} time={uiTime} now={now} onSeek={seek} onBack={() => setSelected(null)} />

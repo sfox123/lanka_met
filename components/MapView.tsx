@@ -6,7 +6,7 @@ import { useEffect, useRef, type MutableRefObject } from 'react';
 import type { FieldEngine } from '@/lib/client/engine';
 import { gridHour, kindAt, type TimeModel } from '@/lib/client/timeline';
 import { sampleFlow } from '@/lib/shared/flow';
-import { DOMAINS, domainCorners, domainLonLat, domainPx, type DomainId } from '@/lib/shared/geo';
+import { DOMAINS, domainCorners, domainLonLat, domainPx, inPointBounds, type DomainId } from '@/lib/shared/geo';
 import { PALETTES, colourModel, colourise, upsample, type PaletteId } from '@/lib/shared/palettes';
 import { CFG, RISK_LABEL } from '@/lib/shared/risk';
 import type { Channel, Estate, EstateState, FrameMeta, GridForecast, WeatherSystem } from '@/lib/shared/types';
@@ -43,6 +43,10 @@ export interface MapViewProps {
   estateState: EstateState[];
   selected: string | null;
   onSelect: (slug: string | null) => void;
+  /** the point picked on the map, marked with a ring */
+  point: { lon: number; lat: number } | null;
+  /** a click over Sri Lanka that is not on an estate */
+  onPoint: (lon: number, lat: number) => void;
   onSystem: (id: string) => void;
   focusSystem: WeatherSystem | null;
 }
@@ -189,9 +193,15 @@ export default function MapView(props: MapViewProps) {
           );
           return (hits[0]?.properties?.slug as string | undefined) ?? null;
         };
-        map.on('click', (e) => propsRef.current.onSelect(pick(e)));
+        map.on('click', (e) => {
+          const slug = pick(e);
+          const p = propsRef.current;
+          if (slug) p.onSelect(slug);
+          else if (inPointBounds(e.lngLat.lng, e.lngLat.lat)) p.onPoint(e.lngLat.lng, e.lngLat.lat);
+          else p.onSelect(null);
+        });
         map.on('mousemove', (e) => {
-          map.getCanvas().style.cursor = pick(e) ? 'pointer' : '';
+          map.getCanvas().style.cursor = pick(e) ? 'pointer' : inPointBounds(e.lngLat.lng, e.lngLat.lat) ? 'crosshair' : '';
           probe(e);
         });
         map.on('mouseout', () => {
@@ -503,6 +513,19 @@ export default function MapView(props: MapViewProps) {
     if (!e || !map || props.domain !== 'sl') return;
     if (map.getZoom() < 8.2 || !map.getBounds().contains(e.centroid)) map.flyTo({ center: e.centroid, zoom: Math.max(map.getZoom(), 9.2), duration: 900 });
   }, [props.selected, props.estates, props.domain]);
+  // ring on the picked point
+  const pointMarker = useRef<maplibregl.Marker | null>(null);
+  const pLon = props.point?.lon;
+  const pLat = props.point?.lat;
+  useEffect(() => {
+    pointMarker.current?.remove();
+    pointMarker.current = null;
+    const map = mapRef.current;
+    if (pLon == null || pLat == null || !map) return;
+    const el = document.createElement('div');
+    el.className = 'point-marker';
+    pointMarker.current = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([pLon, pLat]).addTo(map);
+  }, [pLon, pLat]);
   useEffect(() => {
     const s = props.focusSystem;
     if (s) mapRef.current?.fitBounds([[s.bbox[0] - 2, s.bbox[1] - 2], [s.bbox[2] + 2, s.bbox[3] + 2]], { padding: 40, duration: 900, maxZoom: 6.5 });

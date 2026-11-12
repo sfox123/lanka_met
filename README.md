@@ -32,6 +32,8 @@ Everything is stored under `storage/` (git-ignored). Delete that folder to start
 | **Rain risk** | Satellite likelihood blended with Open-Meteo, per estate and lead time. |
 | **Weather systems** | Large cold-cloud clusters scored 0–100 for organisation, with distance, movement and closing speed relative to Sri Lanka. |
 | **Forecast** | Open-Meteo hourly/daily per estate, a 0.25° rain grid over the island, and ERA5 monthly normals. |
+| **Any point** | Click anywhere on the map over Sri Lanka: the same panels as an estate, with the satellite values taken within 12 km of the point (worked out in the browser) and an Open-Meteo forecast for its coordinates. |
+| **No image, no gap** | The model grid keeps its last 24 hours. Where IMD skipped frames (more than 95 minutes apart), the timeline shows the Open-Meteo picture for that stretch, and the satellite image replaces it once it arrives. |
 
 ### The dashboard
 
@@ -76,7 +78,7 @@ data/                estate KML files and the generated estates.json
 storage/             raw frames (14 days), fields, index.json, forecast cache  (git-ignored)
 ```
 
-API: `GET /api/state` (live: the last 24 hours) or `?day=YYYY-MM-DD` (an earlier Sri Lanka date) · `GET /api/forecast` · `GET /api/field/{ir1|vis|wv}/{sl|region}/{id}` · `GET /api/estates/{slug}/csv` · `GET /api/ingest` (health) · `POST /api/ingest` (`?reprocess=1` rebuilds everything from the raw frames, `?forecast=1` forces an Open-Meteo refresh).
+API: `GET /api/state` (live: the last 24 hours) or `?day=YYYY-MM-DD` (an earlier Sri Lanka date) · `GET /api/forecast` · `GET /api/point?lat=..&lon=..` (Open-Meteo forecast for any point over Sri Lanka, cached for an hour) · `GET /api/field/{ir1|vis|wv}/{sl|region}/{id}` · `GET /api/estates/{slug}/csv` · `GET /api/ingest` (health) · `POST /api/ingest` (`?reprocess=1` rebuilds everything from the raw frames, `?forecast=1` forces an Open-Meteo refresh).
 
 Environment (all optional): `LANKAMET_KEEP_HOURS` (retention, see Deploying on Vercel), `LANKAMET_BACKEND=blob` (make a local run use the Blob store), `NEXT_DIST_DIR` (separate build folder, so a build or second server can run beside `npm run dev`), `OPEN_METEO_API_KEY` (a paid Open-Meteo key; switches to the `customer-api` endpoints — `OPEN_MET_KEY` is accepted too), `LANKAMET_STORAGE`, `LANKAMET_USER_AGENT` (put a contact email here before deploying), `IMD_BASE_URL`, `OPEN_METEO_BASE`, `NEXT_PUBLIC_MAP_STYLE_URL`, `LANKAMET_NO_SCHEDULER=1`. Put them in `.env` (git-ignored) or the host's environment settings.
 

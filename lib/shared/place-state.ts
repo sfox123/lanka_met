@@ -1,0 +1,81 @@
+// Rain-risk state of one place (an estate, or a point picked on the map): the satellite signal
+// now, the nowcast leads and the model hours, blended. Shared by the server (estates) and the
+// browser (picked points), so both follow exactly the same rules.
+import { blendRisk, gpiRate, modelSignal, riskLevel, satProbability } from './risk';
+import type { EstateForecast, EstateState, FrameMeta, LeadRisk, Nowcast } from './types';
+
+function hourIndex(fc: EstateForecast, tMs: number): number {
+  // hourly values describe the hour ending at the timestamp for precipitation; pick the nearest slot
+  const times = fc.hourly.time;
+  let best = -1;
+  let bestD = 45 * 60000;
+  for (let i = 0; i < times.length; i++) {
+    const d = Math.abs(Date.parse(times[i]) - tMs);
+    if (d <= bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+export function estateStateFor(slug: string, frames: FrameMeta[], nowcast: Nowcast | null, fc: EstateForecast | undefined, nowMs: number): EstateState {
+  const ok = frames.filter((f) => f.estates?.[slug]);
+  const latest = ok[ok.length - 1];
+  const current = latest?.estates?.[slug] ?? null;
+  let trend1h: number | null = null;
+  if (latest) {
+    const target = Date.parse(latest.t) - 3600e3;
+    const ref = ok.find((f) => Math.abs(Date.parse(f.t) - target) <= 16 * 60000);
+    if (ref?.estates?.[slug]) trend1h = Math.round((current!.mean - ref.estates[slug].mean) * 1000) / 1000;
+  }
+  const satProb = current ? satProbability(current, trend1h) : null;
+  // satellite observations older than 2 h say little about now
+  const satFresh = latest ? nowMs - Date.parse(latest.t) < 2.5 * 3600e3 : false;
+
+  const model = (tMs: number) => {
+    if (!fc) return null;
+    const i = hourIndex(fc, tMs);
+    return i < 0 ? null : modelSignal(fc.hourly.precipitation_probability[i], fc.hourly.precipitation[i]);
+  };
+
+  const risks: LeadRisk[] = [];
+  if (latest) {
+    const base = Date.parse(latest.t);
+    risks.push({ ...blendRisk(0, satFresh ? satProb : null, model(base)), t: latest.t });
+    const nc = nowcast?.baseId === latest.id ? nowcast.estates.find((e) => e.slug === slug) : undefined;
+    for (const lead of nc?.leads ?? []) {
+      const t = base + lead.leadMin * 60000;
+      risks.push({ ...blendRisk(lead.leadMin, satFresh ? satProbability(lead) : null, model(t)), t: new Date(t).toISOString() });
+    }
+  }
+  // model-only hours after the nowcast window, out to 24 h from now
+  if (fc) {
+    const after = risks.length ? Date.parse(risks[risks.length - 1].t) : nowMs - 3600e3;
+    const base = latest ? Date.parse(latest.t) : nowMs;
+    for (let i = 0; i < fc.hourly.time.length; i++) {
+      const t = Date.parse(fc.hourly.time[i]);
+      if (t <= after || t > nowMs + 24 * 3600e3) continue;
+      const m = modelSignal(fc.hourly.precipitation_probability[i], fc.hourly.precipitation[i]);
+      risks.push({ ...blendRisk(Math.round((t - base) / 60000), null, m), t: fc.hourly.time[i] });
+    }
+  }
+  // headline: the worst risk between now (minus a little slack) and three hours ahead
+  const window = risks.filter((r) => {
+    const t = Date.parse(r.t);
+    return t >= nowMs - 30 * 60000 && t <= nowMs + 3 * 3600e3;
+  });
+  const pool = window.length ? window : risks.slice(-1);
+  const risk3h = pool.reduce((m, r) => Math.max(m, r.risk), 0);
+
+  let rain24h: number | null = null;
+  if (fc) {
+    rain24h = 0;
+    for (let i = 0; i < fc.hourly.time.length; i++) {
+      const t = Date.parse(fc.hourly.time[i]);
+      if (t > nowMs && t <= nowMs + 24 * 3600e3) rain24h += fc.hourly.precipitation[i] ?? 0;
+    }
+    rain24h = Math.round(rain24h * 10) / 10;
+  }
+  return { slug, current, trend1h, satProb, gpi: current ? gpiRate(current) : null, risks, risk3h, level: riskLevel(risk3h), rain24h };
+}

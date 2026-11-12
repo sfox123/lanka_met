@@ -1,6 +1,7 @@
 // Open-Meteo client: estate forecasts, a 0.25° grid over Sri Lanka, ERA5 climatology and
 // spot analyses at weather-system centres. Results are cached on disk and refreshed every 3 h.
 // Weather data by Open-Meteo.com (CC BY 4.0). The free tier is for non-commercial use.
+import { POINT_SLUG } from '../shared/geo';
 import { getMasks } from './masks';
 import { KEYS, backendKind, readJson, writeJson } from './store';
 import type { Climatology, DailyForecast, EstateForecast, ForecastBundle, GridForecast, HourlyForecast, WeatherSystem } from '../shared/types';
@@ -35,6 +36,8 @@ const CURRENT = ['temperature_2m', 'relative_humidity_2m', 'apparent_temperature
 
 // 0.25° grid covering the island
 const GRID = { west: 79.25, east: 82.25, south: 5.5, north: 10.0, step: 0.25 };
+/** hours of past model output kept in the grid — the length of the live view */
+const GRID_PAST_H = 24;
 
 interface Shared {
   bundle: ForecastBundle | null;
@@ -60,14 +63,20 @@ async function getJson(url: string, weight: number): Promise<any> {
 const iso = (unix: number) => new Date(unix * 1000).toISOString();
 const asList = (j: any): any[] => (Array.isArray(j) ? j : [j]);
 
-async function fetchEstates(): Promise<EstateForecast[]> {
-  const { estates } = getMasks();
-  if (!estates.length) return [];
+interface Place {
+  slug: string;
+  lat: number;
+  lon: number;
+}
+
+/** Hourly, daily and current weather for a list of places, in one request. */
+async function fetchPlaces(places: Place[]): Promise<EstateForecast[]> {
+  if (!places.length) return [];
   const url =
-    `${BASE}/v1/forecast?latitude=${estates.map((e) => e.centroid[1]).join(',')}&longitude=${estates.map((e) => e.centroid[0]).join(',')}` +
+    `${BASE}/v1/forecast?latitude=${places.map((p) => p.lat).join(',')}&longitude=${places.map((p) => p.lon).join(',')}` +
     `&hourly=${HOURLY.join(',')}&daily=${DAILY.join(',')}&current=${CURRENT.join(',')}` +
     `&timezone=Asia%2FColombo&timeformat=unixtime&past_days=1&forecast_days=7`;
-  const list = asList(await getJson(url, estates.length * 2));
+  const list = asList(await getJson(url, places.length * 2));
   return list.map((loc, i) => {
     const hourly = { time: (loc.hourly.time as number[]).map(iso) } as HourlyForecast;
     for (const k of HOURLY) (hourly as any)[k] = loc.hourly[k] ?? [];
@@ -77,8 +86,33 @@ async function fetchEstates(): Promise<EstateForecast[]> {
     const current: EstateForecast['current'] = {};
     for (const k of CURRENT) current[k] = loc.current?.[k] ?? null;
     if (loc.current?.time) current.time = iso(loc.current.time);
-    return { slug: estates[i].slug, elevation: loc.elevation ?? null, current, hourly, daily };
+    return { slug: places[i].slug, elevation: loc.elevation ?? null, current, hourly, daily };
   });
+}
+
+function fetchEstates(): Promise<EstateForecast[]> {
+  return fetchPlaces(getMasks().estates.map((e) => ({ slug: e.slug, lat: e.centroid[1], lon: e.centroid[0] })));
+}
+
+const POINT_TTL_MS = 3600e3;
+const pointCache = new Map<string, { at: number; data: Promise<EstateForecast> }>();
+
+/**
+ * Forecast for any point over Sri Lanka. Coordinates are rounded to 0.01° (about 1 km, far finer
+ * than the model grid) so nearby clicks share one cached answer for an hour.
+ */
+export function getPointForecast(lat: number, lon: number): Promise<EstateForecast> {
+  const la = Math.round(lat * 100) / 100;
+  const lo = Math.round(lon * 100) / 100;
+  const key = `${la},${lo}`;
+  const hit = pointCache.get(key);
+  if (hit && Date.now() - hit.at < POINT_TTL_MS) return hit.data;
+  const data = fetchPlaces([{ slug: POINT_SLUG, lat: la, lon: lo }]).then((list) => list[0]);
+  pointCache.set(key, { at: Date.now(), data });
+  // a failed request must not be served from the cache
+  data.catch(() => pointCache.delete(key));
+  if (pointCache.size > 300) for (const k of [...pointCache.keys()].slice(0, 100)) pointCache.delete(k);
+  return data;
 }
 
 async function fetchGrid(): Promise<GridForecast> {
@@ -92,12 +126,13 @@ async function fetchGrid(): Promise<GridForecast> {
       lons.push(GRID.west + c * GRID.step);
     }
   }
-  const url = `${BASE}/v1/forecast?latitude=${lats.join(',')}&longitude=${lons.join(',')}&hourly=precipitation,cloud_cover&timeformat=unixtime&forecast_days=3`;
+  const url = `${BASE}/v1/forecast?latitude=${lats.join(',')}&longitude=${lons.join(',')}&hourly=precipitation,cloud_cover&timeformat=unixtime&past_days=1&forecast_days=3`;
   const list = asList(await getJson(url, lats.length));
   const all = (list[0].hourly.time as number[]).map(iso);
-  // keep from the current hour to +48 h
-  const from = Math.max(0, all.findIndex((t) => Date.parse(t) >= Date.now() - 3600e3));
-  const to = Math.min(all.length, from + 49);
+  // keep the last 24 h (shown wherever no satellite image arrived) and the next 48 h
+  const from = Math.max(0, all.findIndex((t) => Date.parse(t) >= Date.now() - GRID_PAST_H * 3600e3));
+  const end = all.findIndex((t) => Date.parse(t) > Date.now() + 48 * 3600e3);
+  const to = end < 0 ? all.length : end;
   const time = all.slice(from, to);
   const pick = (key: string) =>
     time.map((_, hi) => list.map((loc) => Math.round(((loc.hourly[key]?.[from + hi] as number | null) ?? 0) * 10) / 10));

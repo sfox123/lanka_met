@@ -441,6 +441,15 @@ p {
 .probe b {
   font-weight: 650;
 }
+.point-marker {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: rgba(57, 135, 229, 0.45);
+  box-shadow: 0 0 0 2px rgba(8, 13, 23, 0.85), 0 0 0 7px rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+}
 .sys-marker {
   display: flex;
   flex-direction: column;
@@ -577,6 +586,11 @@ p {
 }
 .track .band.model {
   background: rgba(25, 158, 112, 0.3);
+}
+/* a stretch of the observed part with no satellite image: the model, on top of the blue band */
+.track .band.model.gap {
+  background: #14463f;
+  border-radius: 0;
 }
 .track .frame-tick {
   position: absolute;

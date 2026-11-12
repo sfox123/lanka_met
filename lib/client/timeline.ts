@@ -16,7 +16,17 @@ export interface TimeModel {
   /** track fractions where each stretch ends */
   pObs: number;
   pNow: number;
+  /**
+   * Stretches of the observed part with no satellite image (IMD skipped frames), filled with the
+   * model until an image arrives. Each is [from, to] in ms; empty on a past day.
+   */
+  gaps: [number, number][];
 }
+
+/** Frames further apart than this leave a gap; the same limit the motion estimate uses. */
+const GAP_MIN = 95;
+/** A frame stands for this long either side of its scan time before the model takes over. */
+const GAP_EDGE_MIN = 30;
 
 export interface DayWindow {
   /** bounds of the view, UTC ms: now−24 h … now when live, 00:00 … 24:00 for a past day */
@@ -28,7 +38,7 @@ export interface DayWindow {
 }
 
 export function buildTimeModel(frames: FrameMeta[], grid: GridForecast | null, win: DayWindow): TimeModel {
-  if (!win.live) return { live: false, t0: win.start, tLast: win.end, tNowcastEnd: win.end, tModelEnd: win.end, pObs: 1, pNow: 1 };
+  if (!win.live) return { live: false, t0: win.start, tLast: win.end, tNowcastEnd: win.end, tModelEnd: win.end, pObs: 1, pNow: 1, gaps: [] };
   const ir = frames.filter((f) => f.channels.ir1 && f.status === 'ok' && Date.parse(f.t) >= win.start);
   const tLast = ir.length ? Date.parse(ir[ir.length - 1].t) : win.now;
   // start at the oldest frame in the window; a lone frame still gets a short stretch to sit on
@@ -42,7 +52,16 @@ export function buildTimeModel(frames: FrameMeta[], grid: GridForecast | null, w
   const wNow = hasNowcast ? 0.16 : 0;
   const wModel = hasModel ? 0.26 : 0;
   const sum = wObs + wNow + wModel;
-  return { live: true, t0, tLast, tNowcastEnd, tModelEnd, pObs: wObs / sum, pNow: (wObs + wNow) / sum };
+  // hours without a satellite image keep the model picture, as long as the model covers them
+  const gaps: [number, number][] = [];
+  const gridStart = grid?.time.length ? Date.parse(grid.time[0]) : Infinity;
+  for (let i = 1; i < ir.length; i++) {
+    const a = Date.parse(ir[i - 1].t);
+    const b = Date.parse(ir[i].t);
+    const from = a + GAP_EDGE_MIN * 60000;
+    if (b - a > GAP_MIN * 60000 && gridStart <= from + 30 * 60000) gaps.push([from, b - GAP_EDGE_MIN * 60000]);
+  }
+  return { live: true, t0, tLast, tNowcastEnd, tModelEnd, pObs: wObs / sum, pNow: (wObs + wNow) / sum, gaps };
 }
 
 export function posOf(tm: TimeModel, t: number): number {
@@ -61,7 +80,8 @@ export function timeOf(tm: TimeModel, p: number): number {
 }
 
 export function kindAt(tm: TimeModel, t: number): TimeKind {
-  return t <= tm.tLast ? 'observed' : t <= tm.tNowcastEnd ? 'nowcast' : 'model';
+  if (t <= tm.tLast) return tm.gaps.some(([a, b]) => t > a && t < b) ? 'model' : 'observed';
+  return t <= tm.tNowcastEnd ? 'nowcast' : 'model';
 }
 
 /** Index of the model hour closest to t. */

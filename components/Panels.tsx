@@ -1,8 +1,11 @@
 'use client';
 
 import { useMemo } from 'react';
+import type { FieldEngine } from '@/lib/client/engine';
 import { ago, istDayTime, istTime, istWeekday, num, pct, weatherText } from '@/lib/client/format';
-import { compass } from '@/lib/shared/geo';
+import { buildPointData } from '@/lib/client/point';
+import { POINT_RADIUS_KM, POINT_SLUG, compass } from '@/lib/shared/geo';
+import { estateStateFor } from '@/lib/shared/place-state';
 import { CFG, RISK_LABEL, nowcastConfidence, satProbability } from '@/lib/shared/risk';
 import type { AppState, Estate, EstateForecast, EstateState, ForecastBundle, FrameMeta, RiskLevel, WeatherSystem } from '@/lib/shared/types';
 import { Card, HeatLegend, Heatmap, Legend, SegmentBar, Sparkline, TimeChart, type Panel, type StripCell } from './charts';
@@ -47,6 +50,7 @@ export function EstateList({ app, selected, onSelect }: { app: AppState; selecte
         );
       })}
       <p className="note">Sorted by rain risk for the next 3 hours. The small chart is the cloud index over the last 6 hours.</p>
+      <p className="note">Click anywhere on the map over Sri Lanka to get the same data for that point.</p>
     </div>
   );
 }
@@ -76,7 +80,22 @@ function MonthBars({ monthly, current }: { monthly: number[]; current: number })
   );
 }
 
-export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, onBack }: { estate: Estate; state: EstateState | undefined; app: AppState; forecast: EstateForecast | undefined; time: number; now: number; onSeek: (t: number) => void; onBack: () => void }) {
+interface EstateDetailProps {
+  estate: Estate;
+  state: EstateState | undefined;
+  app: AppState;
+  forecast: EstateForecast | undefined;
+  time: number;
+  now: number;
+  onSeek: (t: number) => void;
+  onBack: () => void;
+  /** the place is a point picked on the map, not an estate: no parcels, land use or CSV */
+  point?: boolean;
+  /** shown in place of the forecast chart while there is no forecast */
+  forecastNote?: string;
+}
+
+export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, onBack, point, forecastNote }: EstateDetailProps) {
   const frames = app.frames.filter((f) => f.estates?.[estate.slug]);
   const latest = frames[frames.length - 1];
   const nc = app.nowcast?.baseId === latest?.id ? app.nowcast?.estates.find((e) => e.slug === estate.slug) : undefined;
@@ -157,16 +176,20 @@ export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, 
           ← All estates
         </button>
         <span style={{ flex: 1 }} />
-        <a className="btn" href={`/api/estates/${estate.slug}/csv`} download>
-          Download CSV
-        </a>
+        {!point && (
+          <a className="btn" href={`/api/estates/${estate.slug}/csv`} download>
+            Download CSV
+          </a>
+        )}
       </div>
       <section className="card">
         <div className="hero">
           <div style={{ minWidth: 0 }}>
             <h3 style={{ fontSize: 17 }}>{estate.name}</h3>
             <div className="sub">
-              {num(estate.areaHa)} ha · {estate.centroid[1].toFixed(3)}°N {estate.centroid[0].toFixed(3)}°E{forecast?.elevation != null ? ` · ${Math.round(forecast.elevation)} m` : ''}
+              {point ? '' : `${num(estate.areaHa)} ha · `}
+              {estate.centroid[1].toFixed(3)}°N {estate.centroid[0].toFixed(3)}°E{forecast?.elevation != null ? ` · ${Math.round(forecast.elevation)} m` : ''}
+              {point ? ` · satellite values within ${estate.bufferKm} km` : ''}
             </div>
             <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
               {state && <RiskBadge level={state.level} />}
@@ -199,7 +222,7 @@ export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, 
         </div>
       </div>
       {cur && (
-        <Card title="Weather at the estate" sub={`Open-Meteo analysis${cur.time ? ` · ${istTime(cur.time)} IST` : ''}`}>
+        <Card title={point ? 'Weather at this point' : 'Weather at the estate'} sub={`Open-Meteo analysis${cur.time ? ` · ${istTime(cur.time)} IST` : ''}`}>
           <div className="tiles" style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))' }}>
             <div>
               <div className="note">Conditions</div>
@@ -222,7 +245,7 @@ export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, 
           </div>
         </Card>
       )}
-      <Card title="Cloud over the estate" sub="Satellite, last hours, and the cloud-motion nowcast. Click to move the map to that time.">
+      <Card title={point ? 'Cloud over this point' : 'Cloud over the estate'} sub="Satellite, last hours, and the cloud-motion nowcast. Click to move the map to that time.">
         {frames.length ? <TimeChart panels={satPanels} tMin={satMin} tMax={satMax} now={now} cursor={time} onPick={onSeek} /> : <p className="note">No satellite frames yet.</p>}
         <Legend
           items={[
@@ -240,7 +263,7 @@ export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, 
         )}
       </Card>
       <Card title="Next 24 hours" sub="Open-Meteo forecast, with the blended rain risk on top">
-        {fcPanels.length ? <TimeChart panels={fcPanels} tMin={fcMin} tMax={fcMax} now={now} cursor={time} onPick={onSeek} /> : <p className="note">Open-Meteo forecast not loaded yet.</p>}
+        {fcPanels.length ? <TimeChart panels={fcPanels} tMin={fcMin} tMax={fcMax} now={now} cursor={time} onPick={onSeek} /> : <p className="note">{forecastNote ?? 'Open-Meteo forecast not loaded yet.'}</p>}
         <div className="legend-row">
           <span>Risk:</span>
           {(Object.keys(RISK_LABEL) as RiskLevel[]).map((l) => (
@@ -252,9 +275,61 @@ export function EstateDetail({ estate, state, app, forecast, time, now, onSeek, 
         </div>
       </Card>
       {forecast && <WeekOutlook fc={forecast} />}
-      <Card title="Land use" sub={`${num(estate.areaHa)} ha in ${estate.polygons} mapped parcels`}>
-        <SegmentBar parts={parts} unit="ha" />
-      </Card>
+      {!point && (
+        <Card title="Land use" sub={`${num(estate.areaHa)} ha in ${estate.polygons} mapped parcels`}>
+          <SegmentBar parts={parts} unit="ha" />
+        </Card>
+      )}
+    </>
+  );
+}
+
+// ── a point picked on the map ──────────────────────────────────────────
+interface PointDetailProps {
+  point: { lon: number; lat: number };
+  engine: FieldEngine;
+  /** engine.version: the satellite values are recomputed as more frames finish downloading */
+  version: number;
+  app: AppState;
+  /** false when a past day is open: its frames say nothing about the risk now */
+  live: boolean;
+  forecast: EstateForecast | null;
+  forecastError: string | null;
+  time: number;
+  now: number;
+  onSeek: (t: number) => void;
+  onBack: () => void;
+}
+
+/**
+ * The estate panels for any point: satellite values worked out in the browser from the fields
+ * around the point, the Open-Meteo forecast fetched for its coordinates, and the same risk blend.
+ */
+export function PointDetail({ point, engine, version, app, live, forecast, forecastError, time, now, onSeek, onBack }: PointDetailProps) {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const data = useMemo(() => buildPointData(engine, app.frames, point.lon, point.lat, live), [engine, app.frames, point.lon, point.lat, live, version]);
+  const pointApp = useMemo<AppState>(() => ({ ...app, frames: data.frames, nowcast: data.nowcast }), [app, data]);
+  const minute = Math.floor(now / 60000);
+  const state = useMemo(() => estateStateFor(POINT_SLUG, live ? data.frames.slice(-8) : [], data.nowcast, forecast ?? undefined, minute * 60000), [data, forecast, live, minute]);
+  const place = useMemo<Estate>(
+    () => ({ slug: POINT_SLUG, name: 'Selected point', centroid: [point.lon, point.lat], bbox: [point.lon, point.lat, point.lon, point.lat], areaHa: 0, radiusKm: 0, bufferKm: POINT_RADIUS_KM, polygons: 0, landuse: [] }),
+    [point.lon, point.lat],
+  );
+  return (
+    <>
+      <EstateDetail
+        point
+        estate={place}
+        state={state}
+        app={pointApp}
+        forecast={forecast ?? undefined}
+        forecastNote={forecastError ? `Could not load the Open-Meteo forecast for this point (${forecastError}).` : 'Loading the Open-Meteo forecast for this point…'}
+        time={time}
+        now={now}
+        onSeek={onSeek}
+        onBack={onBack}
+      />
+      {data.pending > 0 && <p className="note">Reading the satellite frames at this point… {data.pending} to go.</p>}
     </>
   );
 }

@@ -118,6 +118,9 @@ export default function Timeline(p: Props) {
         <div className="band observed" style={{ left: 0, width: pc(tm.pObs) }} />
         {tm.pNow > tm.pObs && <div className="band nowcast" style={{ left: pc(tm.pObs), width: pc(tm.pNow - tm.pObs) }} />}
         {tm.pNow < 1 && <div className="band model" style={{ left: pc(tm.pNow), width: pc(1 - tm.pNow) }} />}
+        {tm.gaps.map(([a, b]) => (
+          <div key={a} className="band model gap" title="No satellite image for this stretch: showing the Open-Meteo model" style={{ left: pc(posOf(tm, a)), width: pc(posOf(tm, b) - posOf(tm, a)) }} />
+        ))}
         {p.frames.map((f) => {
           const t = Date.parse(f.t);
           return t >= tm.t0 && t <= tm.tLast && f.channels.ir1 ? <div key={f.id} className="frame-tick" data-loaded={p.loaded.has(f.id)} style={{ left: pc(posOf(tm, t)) }} /> : null;
@@ -145,10 +148,10 @@ export default function Timeline(p: Props) {
             Nowcast +3 h
           </span>
         )}
-        {tm.pNow < 1 && (
-          <span className="key">
+        {(tm.pNow < 1 || tm.gaps.length > 0) && (
+          <span className="key" title="Open-Meteo model. It also fills any stretch with no satellite image, until the image arrives.">
             <i style={{ background: 'var(--model)' }} />
-            Model +48 h
+            {tm.pNow < 1 ? 'Model +48 h' : 'Model'}
           </span>
         )}
         <span style={{ flex: 1 }} />

@@ -79,7 +79,9 @@ interface TimeChartProps {
   onPick?: (t: number) => void;
 }
 
-const M = { left: 34, right: 10, top: 14, gap: 20, axis: 20 };
+// top: a row for the "now" label; title: room above each panel for its title; gap: clear space
+// between one panel's plot and the next panel's title, so nothing drawn in a plot touches a title
+const M = { left: 34, right: 10, top: 14, title: 20, gap: 10, axis: 20 };
 
 function timeTicks(tMin: number, tMax: number, width: number): { t: number; label: string; major: boolean }[] {
   const hours = (tMax - tMin) / 3600e3;
@@ -120,10 +122,10 @@ export function TimeChart({ panels, tMin, tMax, now, cursor, onPick }: TimeChart
   const innerW = Math.max(10, width - M.left - M.right);
   const x = (t: number) => M.left + ((t - tMin) / (tMax - tMin)) * innerW;
   const tops = useMemo(() => {
-    let y = M.top + 12;
+    let y = M.top;
     return panels.map((p) => {
-      const top = y;
-      y += p.height + M.gap;
+      const top = y + M.title;
+      y = top + p.height + M.gap;
       return top;
     });
   }, [panels]);
@@ -173,7 +175,7 @@ export function TimeChart({ panels, tMin, tMax, now, cursor, onPick }: TimeChart
             const y = (v: number) => top + p.height - (Math.min(p.max, Math.max(0, v)) / p.max) * p.height;
             return (
               <g key={p.title}>
-                <text className="panel-title" x={M.left} y={top - 5}>
+                <text className="panel-title" x={M.left} y={top - 9}>
                   {p.title}
                 </text>
                 {!p.strip &&
@@ -230,16 +232,19 @@ export function TimeChart({ panels, tMin, tMax, now, cursor, onPick }: TimeChart
               </text>
             </g>
           ))}
+          {/* time markers are drawn inside each plot only, so they never run through a panel title */}
           {inRange(now) && (
             <g>
-              <line x1={x(now)} x2={x(now)} y1={12} y2={height - M.axis} stroke="var(--text-2)" strokeDasharray="3 3" />
-              <text x={Math.max(M.left + 10, Math.min(x(now), M.left + innerW - 10))} y={9} textAnchor="middle" style={{ fill: 'var(--text-2)' }}>
+              {panels.map((p, pi) => (
+                <line key={p.title} x1={x(now)} x2={x(now)} y1={tops[pi]} y2={tops[pi] + p.height} stroke="var(--text-2)" strokeDasharray="3 3" />
+              ))}
+              <text x={Math.max(M.left + 10, Math.min(x(now), M.left + innerW - 10))} y={10} textAnchor="middle" style={{ fill: 'var(--text-2)' }}>
                 now
               </text>
             </g>
           )}
-          {inRange(cursor) && <line x1={x(cursor)} x2={x(cursor)} y1={M.top + 10} y2={height - M.axis} stroke="#fff" strokeWidth={1.5} opacity={0.85} />}
-          {hover && <line x1={x(hoverT)} x2={x(hoverT)} y1={M.top + 10} y2={height - M.axis} stroke="var(--muted)" />}
+          {inRange(cursor) && panels.map((p, pi) => <line key={p.title} x1={x(cursor)} x2={x(cursor)} y1={tops[pi]} y2={tops[pi] + p.height} stroke="#fff" strokeWidth={1.5} opacity={0.85} />)}
+          {hover && panels.map((p, pi) => <line key={p.title} x1={x(hoverT)} x2={x(hoverT)} y1={tops[pi]} y2={tops[pi] + p.height} stroke="var(--muted)" />)}
         </svg>
       )}
       {hover && rows.length > 0 && (

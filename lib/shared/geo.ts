@@ -145,3 +145,11 @@ export function inMultiPolygon(lon: number, lat: number, polys: number[][][][]):
 
 /** Centre of Sri Lanka, used as the reference point for distances to weather systems. */
 export const SL_CENTRE: [number, number] = [80.7, 7.75];
+
+/** Points can be picked anywhere over Sri Lanka and its coastal waters. */
+export const POINT_BOUNDS = { west: 79.3, east: 82.2, south: 5.6, north: 10.1 };
+/** Slug used for the place picked on the map (it stands in for an estate slug). */
+export const POINT_SLUG = '__point';
+/** Radius of the area summarised around a picked point — the same as the buffer around an estate. */
+export const POINT_RADIUS_KM = 12;
+export const inPointBounds = (lon: number, lat: number) => lon >= POINT_BOUNDS.west && lon <= POINT_BOUNDS.east && lat >= POINT_BOUNDS.south && lat <= POINT_BOUNDS.north;
