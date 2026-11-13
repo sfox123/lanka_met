@@ -1,6 +1,7 @@
 // Ingest: poll IMD politely, store new frames, derive fields and metrics, refresh the nowcast.
 // One call = one pass. Locally the scheduler calls it every 5 minutes; on Vercel an external
-// cron hits GET /api/ingest?run=1 and the pass must finish within the function's time limit.
+// cron hits GET /api/ingest?run=1 (and an open dashboard starts a pass when none ran for five
+// minutes — see ingestDue), and the pass must finish within the function's time limit.
 import crypto from 'node:crypto';
 import { DOMAINS, pxKm } from '../shared/geo';
 import { advect, computeFlow, meanFlow, type Flow } from '../shared/flow';
@@ -31,9 +32,12 @@ interface Shared {
   busy: Promise<string> | null;
   /** raw files that turned out to be duplicates — no need to decode them again */
   skipped: Set<string>;
+  /** when this instance last started a pass on behalf of a dashboard request */
+  viewPollAt: number;
 }
 const g = globalThis as unknown as { __lankamet_ingest?: Shared };
-const shared: Shared = (g.__lankamet_ingest ??= { status: null, statusReadAt: 0, busy: null, skipped: new Set() });
+const shared: Shared = (g.__lankamet_ingest ??= { status: null, statusReadAt: 0, busy: null, skipped: new Set(), viewPollAt: 0 });
+shared.viewPollAt ??= 0;
 
 const EMPTY_STATUS: IngestStatus = { running: false, lastRun: null, lastOk: null, lastMessage: 'not run yet', log: [] };
 
@@ -319,6 +323,25 @@ async function backfill(all: boolean): Promise<number> {
   }
   if (todo.length) await saveIndex();
   return todo.length;
+}
+
+/** How often a dashboard request may start a pass when no scheduler is doing it. */
+const VIEW_POLL_MS = 5 * 60000;
+
+/**
+ * Serverless only: true when no ingest pass has run for five minutes, so the caller should start
+ * one. The external cron is not dependable (GitHub delays or drops scheduled runs for hours), and
+ * a frame IMD has replaced can never be fetched again, so an open dashboard keeps the polling
+ * going by itself. Each instance claims at most one pass per interval.
+ */
+export async function ingestDue(): Promise<boolean> {
+  if (!ON_VERCEL || shared.busy) return false;
+  const now = Date.now();
+  if (now - shared.viewPollAt < VIEW_POLL_MS) return false;
+  const status = await getIngestStatus();
+  if (status.lastRun && now - Date.parse(status.lastRun) < VIEW_POLL_MS) return false;
+  shared.viewPollAt = now;
+  return true;
 }
 
 interface PollState {
