@@ -1,18 +1,12 @@
-# Keeps the deployed app polling IMD every 5 minutes so no frame is missed. IMD overwrites one
-# file per channel every 30 minutes; a frame that was not fetched in time is gone for good.
-#
-# GitHub does not run a `schedule` on time: runs are delayed or dropped, sometimes for hours
-# (three runs in 17 hours on 12 Nov 2026). So the schedule is only used to START a run; each run
-# then polls by itself for five and a half hours. Runs share one concurrency group, so a newly
-# scheduled run waits in line and takes over the moment the running one ends.
-# Vercel's own cron only runs once a day on the Hobby plan.
+# Runs one ingest pass on the deployed app, by hand (Actions tab -> Ingest tick -> Run workflow).
+# The regular polling is done by Vercel Cron every 5 minutes (vercel.json; needs the Pro plan).
+# This used to run on a schedule, but GitHub delays or drops scheduled runs for hours, and a frame
+# IMD has replaced cannot be fetched again. On the Hobby plan, where Vercel Cron runs only once a
+# day, point an external cron service at the same URL instead.
 # Repository secrets needed:  LANKAMET_URL  (e.g. https://lanka-met.vercel.app)   CRON_SECRET
 name: Ingest tick
 
 on:
-  schedule:
-    # off the hour and half hour, when GitHub's scheduler is busiest
-    - cron: '7,27,47 * * * *'
   workflow_dispatch:
 
 concurrency:
@@ -22,32 +16,15 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    # the job limit is 6 hours; stop well before it
-    timeout-minutes: 345
+    timeout-minutes: 3
     env:
       LANKAMET_URL: ${{ secrets.LANKAMET_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
     steps:
-      - name: Call /api/ingest every 5 minutes
+      - name: Call /api/ingest
         run: |
           if [ -z "$LANKAMET_URL" ]; then
-            echo "::notice::Set the LANKAMET_URL repository secret (and CRON_SECRET) to enable polling."
+            echo "::notice::Set the LANKAMET_URL repository secret (and CRON_SECRET) to use this."
             exit 0
           fi
-          end=$((SECONDS + 330 * 60))
-          failures=0
-          while [ "$SECONDS" -lt "$end" ]; do
-            started=$SECONDS
-            if curl -fsS --max-time 120 -o /dev/null                  -H "Authorization: Bearer $CRON_SECRET"                  "$LANKAMET_URL/api/ingest?run=1"; then
-              echo "$(date -u +%H:%M:%S) ok"
-              failures=0
-            else
-              failures=$((failures + 1))
-              echo "::warning::$(date -u +%H:%M:%S) ingest call failed ($failures in a row)"
-              # a wrong URL or secret will not fix itself: give up and let the run show as failed
-              if [ "$failures" -ge 6 ]; then exit 1; fi
-            fi
-            # one call every 5 minutes, counted from the start of the call
-            wait_s=$((300 - (SECONDS - started)))
-            if [ "$wait_s" -gt 0 ]; then sleep "$wait_s"; fi
-          done
+          curl -fsS --max-time 120             -H "Authorization: Bearer $CRON_SECRET"             "$LANKAMET_URL/api/ingest?run=1"

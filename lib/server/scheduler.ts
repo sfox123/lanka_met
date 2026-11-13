@@ -2,8 +2,8 @@
 // Satellite: every 5 minutes (three HEAD requests; a download only when IMD has a new frame).
 // Open-Meteo: checked on the same tick, refreshed when the cache is older than 3 hours.
 //
-// Not used on Vercel: functions do not stay alive between requests, so there an external cron
-// calls GET /api/ingest?run=1 instead (see vercel.json and .github/workflows/ingest.yml), and an
+// Not used on Vercel: functions do not stay alive between requests, so there Vercel Cron
+// calls /api/ingest every 5 minutes instead (see vercel.json), and an
 // open dashboard starts a pass through /api/state when none has run for five minutes.
 import { runIngest } from './ingest';
 import { getForecast } from './openmeteo';

@@ -10,7 +10,7 @@ export const maxDuration = 60;
 /** `?day=YYYY-MM-DD` (Sri Lanka date) selects a past day; without it, today. */
 export async function GET(req: Request) {
   const state = await buildState(new URL(req.url).searchParams.get('day'));
-  // On Vercel nothing runs between requests, and the external cron can stall for hours. The
+  // On Vercel nothing runs between requests, and the cron can be late or paused. The
   // dashboard asks for its state every minute, so let it keep IMD polled: when no pass has run
   // for five minutes, start one once the response has been sent.
   if (await ingestDue()) {
