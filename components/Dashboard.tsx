@@ -6,7 +6,7 @@ import { FieldEngine } from '@/lib/client/engine';
 import { ago, istDayTime, istTime } from '@/lib/client/format';
 import { buildTimeModel, kindAt } from '@/lib/client/timeline';
 import type { DomainId } from '@/lib/shared/geo';
-import { MSG_PRODUCTS, type MsgProduct } from '@/lib/shared/meteosat';
+import { MSG_PRODUCTS, msgProduct, type MsgProduct } from '@/lib/shared/meteosat';
 import { PALETTES, paletteGradient, type PaletteId } from '@/lib/shared/palettes';
 import { CFG, nowcastConfidence } from '@/lib/shared/risk';
 import { CHANNELS, CHANNEL_LABEL, type AppState, type Channel, type EstateForecast, type ForecastBundle, type WeatherSystem } from '@/lib/shared/types';
@@ -31,7 +31,9 @@ export default function Dashboard() {
   const [palette, setPalette] = useState<PaletteId>('enhanced');
   /** INSAT-3DS fields from IMD (with all the analytics), or Meteosat-9 pictures of the whole Indian Ocean */
   const [sat, setSat] = useState<'insat' | 'msg'>('insat');
-  const [msgProduct, setMsgProduct] = useState<MsgProduct>('ir108');
+  const [msgProductId, setMsgProduct] = useState<MsgProduct>('ir_enh');
+  const msgInfo = msgProduct(msgProductId);
+  const msgPal = msgInfo.palette ? PALETTES[msgInfo.palette] : null;
   const [msgLatest, setMsgLatest] = useState<string | null>(null);
   const [msgShown, setMsgShown] = useState<string | null>(null);
   const [opacity, setOpacity] = useState(0.85);
@@ -359,7 +361,7 @@ export default function Dashboard() {
                 domain={domain}
                 palette={palette}
                 sat={sat}
-                msgProduct={msgProduct}
+                msgProduct={msgProductId}
                 msgLatest={msgLatest}
                 onMsgTime={setMsgShown}
                 opacity={opacity}
@@ -398,7 +400,7 @@ export default function Dashboard() {
               <div className="seg" role="group" aria-label="Colouring">
                 {sat === 'msg'
                   ? MSG_PRODUCTS[channel].map((pr) => (
-                      <button key={pr.id} aria-pressed={msgProduct === pr.id} onClick={() => setMsgProduct(pr.id)} title={pr.hint}>
+                      <button key={pr.id} aria-pressed={msgProductId === pr.id} onClick={() => setMsgProduct(pr.id)} title={pr.hint}>
                         {pr.label}
                       </button>
                     ))
@@ -451,9 +453,23 @@ export default function Dashboard() {
                   )}
                 </div>
                 <div className="glass legend">
-                  {sat === 'msg' ? (
+                  {sat === 'msg' && msgPal ? (
+                    <>
+                      <div className="title">
+                        <span>{msgInfo.hint}</span>
+                      </div>
+                      <div className="bar" style={{ backgroundImage: paletteGradient(msgPal) }} />
+                      <div className="ticks">
+                        {msgPal.ticks.map(([v, label]) => (
+                          <span key={label} style={{ left: `${Math.min(92, Math.max(8, v * 100))}%` }}>
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  ) : sat === 'msg' ? (
                     <div className="title">
-                      <span>{MSG_PRODUCTS[channel].find((x) => x.id === msgProduct)?.hint}</span>
+                      <span>{msgInfo.hint}</span>
                     </div>
                   ) : kind === 'model' ? (
                     <>

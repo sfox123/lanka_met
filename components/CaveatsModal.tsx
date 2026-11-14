@@ -66,7 +66,7 @@ export default function CaveatsModal({ onClose }: { onClose: () => void }) {
             <a href="https://view.eumetsat.int/" target="_blank" rel="noreferrer">
               EUMETSAT View
             </a>{' '}
-            every 15 minutes, © EUMETSAT. Pictures only: the cloud index, motion, nowcast, systems and estate risks are all computed from the INSAT-3DS fields. The rain-rate product is H SAF&apos;s blended
+            every 15 minutes, © EUMETSAT. Pictures only: the cloud index, motion, nowcast, systems and estate risks are all computed from the INSAT-3DS fields. The Enhanced, Rain-potential and Moisture colourings are LankaMet&apos;s own look-up tables applied to EUMETSAT&apos;s grey images; Meteosat&apos;s grey scale is a fixed temperature scale, not IMD&apos;s per-image stretch, so those bands are indicative. The rain-rate product is H SAF&apos;s blended
             geostationary estimate, not a measurement. Solar products are black at night.
           </li>
           <li>

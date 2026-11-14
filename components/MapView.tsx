@@ -7,7 +7,7 @@ import type { FieldEngine } from '@/lib/client/engine';
 import { gridHour, kindAt, type TimeModel } from '@/lib/client/timeline';
 import { sampleFlow } from '@/lib/shared/flow';
 import { DOMAINS, domainCorners, domainLonLat, domainPx, inPointBounds, type DomainId } from '@/lib/shared/geo';
-import { MSG_PRODUCTS, MSG_VIEW, msgSlot, msgTiles, type MsgProduct } from '@/lib/shared/meteosat';
+import { MSG_PROTOCOL, MSG_VIEW, msgProduct, msgSlot, msgTiles, parseMsgPal, recolour, type MsgProduct } from '@/lib/shared/meteosat';
 import { PALETTES, colourModel, colourise, upsample, type PaletteId } from '@/lib/shared/palettes';
 import { CFG, RISK_LABEL } from '@/lib/shared/risk';
 import type { Channel, Estate, EstateState, FrameMeta, GridForecast, WeatherSystem } from '@/lib/shared/types';
@@ -79,6 +79,28 @@ async function loadStyle(): Promise<{ style: maplibregl.StyleSpecification; full
   }
 }
 
+// `msgpal://<palette>/<wms url>`: fetch EUMETSAT's grey tile and colour it with a LankaMet palette before MapLibre sees it
+let protocolReady = false;
+function registerMsgPal() {
+  if (protocolReady) return;
+  protocolReady = true;
+  maplibregl.addProtocol(MSG_PROTOCOL, async (params, abort) => {
+    const req = parseMsgPal(params.url);
+    if (!req) throw new Error('bad msgpal url');
+    const res = await fetch(req.url, { signal: abort.signal });
+    if (!res.ok) throw new Error(`EUMETSAT ${res.status}`);
+    const bmp = await createImageBitmap(await res.blob());
+    const c = new OffscreenCanvas(bmp.width, bmp.height);
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(bmp, 0, 0);
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    recolour(img.data, req.palette);
+    ctx.putImageData(img, 0, 0);
+    const out = await c.convertToBlob({ type: 'image/png' });
+    return { data: await out.arrayBuffer(), cacheControl: res.headers.get('cache-control') ?? undefined };
+  });
+}
+
 export default function MapView(props: MapViewProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const mapEl = useRef<HTMLDivElement>(null);
@@ -114,6 +136,7 @@ export default function MapView(props: MapViewProps) {
     modelCanvas.width = 2;
     modelCanvas.height = 2;
 
+    registerMsgPal();
     void loadStyle().then(({ style, full }) => {
       if (disposed || !mapEl.current) return;
       const map = new maplibregl.Map({
@@ -156,7 +179,7 @@ export default function MapView(props: MapViewProps) {
         map.addLayer({ id: 'model', type: 'raster', source: 'model', paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.85 }, layout: { visibility: 'none' } }, firstSymbol);
         // Meteosat-9: WMS tiles; the URL carries the product and the image time and is swapped as the cursor moves
         const p0 = propsRef.current;
-        map.addSource('msg', { type: 'raster', tiles: msgTiles(p0.msgProduct, msgSlot(p0.timeRef.current || Date.now(), p0.msgLatest)), tileSize: 256, maxzoom: 7, attribution: 'Meteosat-9 © EUMETSAT' });
+        map.addSource('msg', { type: 'raster', tiles: msgTiles(msgProduct(p0.msgProduct), msgSlot(p0.timeRef.current || Date.now(), p0.msgLatest)), tileSize: 256, maxzoom: 7, attribution: 'Meteosat-9 © EUMETSAT' });
         map.addLayer({ id: 'msg', type: 'raster', source: 'msg', paint: { 'raster-fade-duration': 150, 'raster-opacity': 0.9 }, layout: { visibility: 'none' } }, firstSymbol);
 
         // the island outline stays readable through thick cloud colours
@@ -236,7 +259,7 @@ export default function MapView(props: MapViewProps) {
       const { lng, lat } = e.lngLat;
       let text = '';
       if (p.sat === 'msg') {
-        text = `<b>${MSG_PRODUCTS[p.channel].find((x) => x.id === p.msgProduct)?.label ?? 'Meteosat'}</b> · picture only, no index`;
+        text = `<b>Meteosat-9 · ${msgProduct(p.msgProduct).label}</b> · picture only, no index`;
       } else if (lastKind === 'model' && p.grid) {
         const g = p.grid;
         const c = Math.floor(((lng - g.west) / (g.east - g.west)) * g.cols);
@@ -459,7 +482,7 @@ export default function MapView(props: MapViewProps) {
         if (key !== msgKey && performance.now() - msgSwapAt > 350) {
           msgKey = key;
           msgSwapAt = performance.now();
-          (map.getSource('msg') as maplibregl.RasterTileSource).setTiles(msgTiles(p.msgProduct, slot));
+          (map.getSource('msg') as maplibregl.RasterTileSource).setTiles(msgTiles(msgProduct(p.msgProduct), slot));
           p.onMsgTime?.(slot);
         }
       } else if (kind === 'model' && p.grid) {
