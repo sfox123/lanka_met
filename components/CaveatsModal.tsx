@@ -62,6 +62,14 @@ export default function CaveatsModal({ onClose }: { onClose: () => void }) {
         <ul>
           <li>Satellite imagery: IMD / ISRO INSAT-3DS (mausam.imd.gov.in).</li>
           <li>
+            <b>Full disc · Meteosat</b> — Meteosat-9 (IODC, 45.5°E) imagery and RGB products served by{' '}
+            <a href="https://view.eumetsat.int/" target="_blank" rel="noreferrer">
+              EUMETSAT View
+            </a>{' '}
+            every 15 minutes, © EUMETSAT. Pictures only: the cloud index, motion, nowcast, systems and estate risks are all computed from the INSAT-3DS fields. The rain-rate product is H SAF&apos;s blended
+            geostationary estimate, not a measurement. Solar products are black at night.
+          </li>
+          <li>
             Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo.com</a> (CC BY 4.0), including ERA5 climatology.
           </li>
           <li>Basemap: OpenFreeMap, © OpenMapTiles, data © OpenStreetMap contributors. Sri Lanka outline: Natural Earth.</li>

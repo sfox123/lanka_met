@@ -6,6 +6,7 @@ import { FieldEngine } from '@/lib/client/engine';
 import { ago, istDayTime, istTime } from '@/lib/client/format';
 import { buildTimeModel, kindAt } from '@/lib/client/timeline';
 import type { DomainId } from '@/lib/shared/geo';
+import { MSG_PRODUCTS, type MsgProduct } from '@/lib/shared/meteosat';
 import { PALETTES, paletteGradient, type PaletteId } from '@/lib/shared/palettes';
 import { CFG, nowcastConfidence } from '@/lib/shared/risk';
 import { CHANNELS, CHANNEL_LABEL, type AppState, type Channel, type EstateForecast, type ForecastBundle, type WeatherSystem } from '@/lib/shared/types';
@@ -28,6 +29,11 @@ export default function Dashboard() {
   const [channel, setChannel] = useState<Channel>('ir1');
   const [domain, setDomain] = useState<DomainId>('sl');
   const [palette, setPalette] = useState<PaletteId>('enhanced');
+  /** INSAT-3DS fields from IMD (with all the analytics), or Meteosat-9 pictures of the whole Indian Ocean */
+  const [sat, setSat] = useState<'insat' | 'msg'>('insat');
+  const [msgProduct, setMsgProduct] = useState<MsgProduct>('ir108');
+  const [msgLatest, setMsgLatest] = useState<string | null>(null);
+  const [msgShown, setMsgShown] = useState<string | null>(null);
   const [opacity, setOpacity] = useState(0.85);
   const [smooth, setSmooth] = useState(true);
   const [particles, setParticles] = useState(true);
@@ -80,6 +86,18 @@ export default function Dashboard() {
     const id = setInterval(load, 20 * 60000);
     return () => clearInterval(id);
   }, []);
+  // newest Meteosat image time, so the map never asks EUMETSAT for a slot that is not there yet
+  useEffect(() => {
+    if (sat !== 'msg') return;
+    const load = () =>
+      fetch('/api/meteosat', { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => j?.latest && setMsgLatest(j.latest))
+        .catch(() => {});
+    void load();
+    const id = setInterval(load, 5 * 60000);
+    return () => clearInterval(id);
+  }, [sat]);
   // the estate risks on the server use the cached forecast: refresh once a newer forecast exists
   useEffect(() => {
     if (bundle?.fetchedAt && app && app.forecastFetchedAt !== bundle.fetchedAt) void loadState();
@@ -255,6 +273,12 @@ export default function Dashboard() {
   const pickChannel = (ch: Channel) => {
     setChannel(ch);
     setPalette(PALETTES_FOR[ch][0]);
+    setMsgProduct(MSG_PRODUCTS[ch][0].id);
+  };
+  const pickArea = (d: DomainId, s: 'insat' | 'msg') => {
+    setDomain(d);
+    setSat(s);
+    if (s === 'msg') setFocusSystem(null);
   };
   const selectEstate = useCallback((slug: string | null) => {
     setSelected(slug);
@@ -301,7 +325,7 @@ export default function Dashboard() {
             <span>Sri Lanka cloud &amp; rain watch · situational awareness, not an official forecast</span>
           </div>
           <span className="spacer" />
-          <span className="attrib">Satellite: IMD / ISRO INSAT-3DS · Weather data by Open-Meteo.com</span>
+          <span className="attrib">Satellite: IMD / ISRO INSAT-3DS{sat === 'msg' ? ' · Meteosat-9 © EUMETSAT' : ''} · Weather data by Open-Meteo.com</span>
           <div className="live" data-age={ageState} title={app?.status.lastMessage ? `Last ingest: ${app.status.lastMessage}` : undefined}>
             <span className="dot" />
             {latest ? (
@@ -334,6 +358,10 @@ export default function Dashboard() {
                 channel={channel}
                 domain={domain}
                 palette={palette}
+                sat={sat}
+                msgProduct={msgProduct}
+                msgLatest={msgLatest}
+                onMsgTime={setMsgShown}
                 opacity={opacity}
                 smooth={smooth}
                 particles={particles}
@@ -350,11 +378,14 @@ export default function Dashboard() {
             </div>
             <div className="map-ui tl">
               <div className="seg" role="group" aria-label="Map area">
-                <button aria-pressed={domain === 'sl'} onClick={() => setDomain('sl')}>
+                <button aria-pressed={sat === 'insat' && domain === 'sl'} onClick={() => pickArea('sl', 'insat')}>
                   Sri Lanka
                 </button>
-                <button aria-pressed={domain === 'region'} onClick={() => setDomain('region')}>
+                <button aria-pressed={sat === 'insat' && domain === 'region'} onClick={() => pickArea('region', 'insat')}>
                   Indian Ocean
+                </button>
+                <button aria-pressed={sat === 'msg'} onClick={() => pickArea('region', 'msg')} title="Meteosat-9 (EUMETSAT): the whole Indian Ocean, Africa to Malaysia, every 15 minutes. Picture only: no cloud index, motion or nowcast.">
+                  Full disc · Meteosat
                 </button>
               </div>
               <div className="seg" role="group" aria-label="Satellite channel">
@@ -365,19 +396,25 @@ export default function Dashboard() {
                 ))}
               </div>
               <div className="seg" role="group" aria-label="Colouring">
-                {PALETTES_FOR[channel].map((id) => (
-                  <button key={id} aria-pressed={palette === id} onClick={() => setPalette(id)} title={PALETTES[id].hint}>
-                    {PALETTES[id].label}
-                  </button>
-                ))}
+                {sat === 'msg'
+                  ? MSG_PRODUCTS[channel].map((pr) => (
+                      <button key={pr.id} aria-pressed={msgProduct === pr.id} onClick={() => setMsgProduct(pr.id)} title={pr.hint}>
+                        {pr.label}
+                      </button>
+                    ))
+                  : PALETTES_FOR[channel].map((id) => (
+                      <button key={id} aria-pressed={palette === id} onClick={() => setPalette(id)} title={PALETTES[id].hint}>
+                        {PALETTES[id].label}
+                      </button>
+                    ))}
               </div>
               <div className="glass layer-menu">
                 <label>
                   Opacity
                   <input type="range" min={0.2} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(+e.target.value)} aria-label="Cloud layer opacity" />
                 </label>
-                <label>
-                  <input type="checkbox" checked={particles} onChange={(e) => setParticles(e.target.checked)} />
+                <label title={sat === 'msg' ? 'Cloud motion is measured on the INSAT-3DS fields only' : undefined}>
+                  <input type="checkbox" checked={particles} disabled={sat === 'msg'} onChange={(e) => setParticles(e.target.checked)} />
                   Motion streaks
                 </label>
                 <label>
@@ -390,6 +427,15 @@ export default function Dashboard() {
               <div className="map-ui bl">
                 <div className="glass clock">
                   <div className="when num">{istDayTime(uiTime)} IST</div>
+                  {sat === 'msg' ? (
+                    <div className="what">
+                      <span className="kind" data-kind="observed">Meteosat-9</span>
+                      <span>
+                        {msgShown ? `image ${istTime(msgShown)} IST` : 'image'} · EUMETSAT, every 15 min
+                        {msgShown && uiTime - Date.parse(msgShown) > 20 * 60000 ? ' · newest available' : ''}
+                      </span>
+                    </div>
+                  ) : (
                   <div className="what">
                     <span className="kind" data-kind={kind}>
                       {kind === 'observed' ? (tm.live ? 'Observed' : 'Recorded') : kind === 'nowcast' ? `Nowcast +${leadMin} min` : uiTime <= tm.tLast ? 'Model · no satellite image' : 'Model forecast'}
@@ -402,9 +448,14 @@ export default function Dashboard() {
                           : 'Open-Meteo rain and cloud'}
                     </span>
                   </div>
+                  )}
                 </div>
                 <div className="glass legend">
-                  {kind === 'model' ? (
+                  {sat === 'msg' ? (
+                    <div className="title">
+                      <span>{MSG_PRODUCTS[channel].find((x) => x.id === msgProduct)?.hint}</span>
+                    </div>
+                  ) : kind === 'model' ? (
                     <>
                       <div className="title">
                         <span>Forecast rain, mm per hour</span>
@@ -435,7 +486,7 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
-            {(!tm || !hasChannel) && (
+            {sat !== 'msg' && (!tm || !hasChannel) && (
               <div className="empty-map">
                 <div className="glass">
                   {!app
@@ -506,7 +557,7 @@ export default function Dashboard() {
             {app && tab === 'systems' && <SystemsPanel frames={frames} focus={focusSystem?.id ?? null} onFocus={focusOn} />}
             {bundle?.error && <p className="note">Open-Meteo refresh failed ({bundle.error}); showing the forecast from {bundle.fetchedAt ? istDayTime(bundle.fetchedAt) : 'never'}.</p>}
             <p className="note" style={{ marginTop: 'auto', paddingTop: 8 }}>
-              Satellite imagery: IMD / ISRO INSAT-3DS · Weather data by{' '}
+              Satellite imagery: IMD / ISRO INSAT-3DS; Meteosat-9 full disc © EUMETSAT (EUMETSAT View) · Weather data by{' '}
               <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">
                 Open-Meteo.com
               </a>{' '}

@@ -32,12 +32,14 @@ Everything is stored under `storage/` (git-ignored). Delete that folder to start
 | **Rain risk** | Satellite likelihood blended with Open-Meteo, per estate and lead time. |
 | **Weather systems** | Large cold-cloud clusters scored 0–100 for organisation, with distance, movement and closing speed relative to Sri Lanka. |
 | **Forecast** | Open-Meteo hourly/daily per estate, a 0.25° rain grid over the island, and ERA5 monthly normals. |
+| **Full disc** | Meteosat-9 imagery from EUMETSAT View as WMS tiles (`lib/shared/meteosat.ts`); `/api/meteosat` reads the newest available image time from the WMS capabilities so the map never asks for a slot that is not published yet. |
 | **Any point** | Click anywhere on the map over Sri Lanka: the same panels as an estate, with the satellite values taken within 12 km of the point (worked out in the browser) and an Open-Meteo forecast for its coordinates. |
 | **No image, no gap** | The model grid keeps its last 24 hours. Where IMD skipped frames (more than 95 minutes apart), the timeline shows the Open-Meteo picture for that stretch, and the satellite image replaces it once it arrives. |
 
 ### The dashboard
 
 - **Map** — Sri Lanka or Indian Ocean view; infrared / visible / water vapour; four colourings (enhanced, rain potential, natural, plain satellite picture); opacity; motion streaks; estates coloured by risk. Hover anywhere for the value under the pointer.
+- **Full disc · Meteosat** — the same map with Meteosat-9 (EUMETSAT, 45.5°E) tiles instead: the whole Indian Ocean from East Africa to Malaysia, every 15 minutes, with IR, convection, air-mass, H SAF rain-rate, natural-colour, visible, dust and water-vapour products. The timeline cursor picks the image slot (back to 2020 on EUMETSAT's archive). Pictures only: no index, motion or nowcast is computed from them, and the streaks and system markers switch off.
 - **Timeline** — live, it shows the last 24 hours of frames (starting at the oldest one available), then continues into the nowcast (+3 h) and the model (+48 h), each in its own colour. When the store holds frames older than that — a local folder keeps 7 days — a date picker (with ‹ › and *Live*) opens an earlier Sri Lanka day as a plain 00:00–24:00 track of recorded frames. Play, step, speed. *Smooth motion* glides clouds between frames; *Slideshow* shows only the real frames. Space plays/pauses, ←/→ step.
 - **Estates tab** — list sorted by 3-hour risk; click one for its risk, cloud history and nowcast, 24-hour forecast, 7-day outlook, comparison with a normal week, land use, and a CSV download.
 - **Island tab** — island cloud cover and cold-top share over time, estate × time heat map, and the thresholds in use.

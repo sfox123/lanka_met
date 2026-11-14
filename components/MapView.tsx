@@ -7,6 +7,7 @@ import type { FieldEngine } from '@/lib/client/engine';
 import { gridHour, kindAt, type TimeModel } from '@/lib/client/timeline';
 import { sampleFlow } from '@/lib/shared/flow';
 import { DOMAINS, domainCorners, domainLonLat, domainPx, inPointBounds, type DomainId } from '@/lib/shared/geo';
+import { MSG_PRODUCTS, MSG_VIEW, msgSlot, msgTiles, type MsgProduct } from '@/lib/shared/meteosat';
 import { PALETTES, colourModel, colourise, upsample, type PaletteId } from '@/lib/shared/palettes';
 import { CFG, RISK_LABEL } from '@/lib/shared/risk';
 import type { Channel, Estate, EstateState, FrameMeta, GridForecast, WeatherSystem } from '@/lib/shared/types';
@@ -35,6 +36,13 @@ export interface MapViewProps {
   channel: Channel;
   domain: DomainId;
   palette: PaletteId;
+  /** which satellite the picture comes from: IMD's INSAT-3DS fields, or Meteosat-9 tiles from EUMETSAT View */
+  sat: 'insat' | 'msg';
+  msgProduct: MsgProduct;
+  /** newest Meteosat image time available (ISO), from /api/meteosat */
+  msgLatest: string | null;
+  /** reports the image time actually shown */
+  onMsgTime?: (iso: string) => void;
   opacity: number;
   smooth: boolean;
   particles: boolean;
@@ -111,7 +119,7 @@ export default function MapView(props: MapViewProps) {
       const map = new maplibregl.Map({
         container: mapEl.current,
         style,
-        bounds: propsRef.current.domain === 'sl' ? SL_VIEW : REGION_VIEW,
+        bounds: propsRef.current.sat === 'msg' ? MSG_VIEW : propsRef.current.domain === 'sl' ? SL_VIEW : REGION_VIEW,
         fitBoundsOptions: { padding: VIEW_PADDING },
         attributionControl: { compact: true },
         maxZoom: 13,
@@ -146,6 +154,10 @@ export default function MapView(props: MapViewProps) {
           animate: true,
         } as any);
         map.addLayer({ id: 'model', type: 'raster', source: 'model', paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.85 }, layout: { visibility: 'none' } }, firstSymbol);
+        // Meteosat-9: WMS tiles; the URL carries the product and the image time and is swapped as the cursor moves
+        const p0 = propsRef.current;
+        map.addSource('msg', { type: 'raster', tiles: msgTiles(p0.msgProduct, msgSlot(p0.timeRef.current || Date.now(), p0.msgLatest)), tileSize: 256, maxzoom: 7, attribution: 'Meteosat-9 © EUMETSAT' });
+        map.addLayer({ id: 'msg', type: 'raster', source: 'msg', paint: { 'raster-fade-duration': 150, 'raster-opacity': 0.9 }, layout: { visibility: 'none' } }, firstSymbol);
 
         // the island outline stays readable through thick cloud colours
         map.addSource('sl-outline', { type: 'geojson', data: '/data/sri-lanka.geojson' });
@@ -223,7 +235,9 @@ export default function MapView(props: MapViewProps) {
       if (!el) return;
       const { lng, lat } = e.lngLat;
       let text = '';
-      if (lastKind === 'model' && p.grid) {
+      if (p.sat === 'msg') {
+        text = `<b>${MSG_PRODUCTS[p.channel].find((x) => x.id === p.msgProduct)?.label ?? 'Meteosat'}</b> · picture only, no index`;
+      } else if (lastKind === 'model' && p.grid) {
         const g = p.grid;
         const c = Math.floor(((lng - g.west) / (g.east - g.west)) * g.cols);
         const r = Math.floor(((g.north - lat) / (g.north - g.south)) * g.rows);
@@ -309,15 +323,18 @@ export default function MapView(props: MapViewProps) {
       const map = mapRef.current;
       const p = propsRef.current;
       if (!map || !readyRef.current) return;
-      const key = `${kind}|${p.domain}|${p.opacity}`;
+      const msg = p.sat === 'msg';
+      const key = `${kind}|${p.domain}|${p.opacity}|${msg}`;
       if (key === visKey) return;
       visKey = key;
       for (const d of Object.values(DOMAINS)) {
-        map.setLayoutProperty(`field-${d.id}`, 'visibility', kind !== 'model' && kind !== '' && d.id === p.domain ? 'visible' : 'none');
+        map.setLayoutProperty(`field-${d.id}`, 'visibility', !msg && kind !== 'model' && kind !== '' && d.id === p.domain ? 'visible' : 'none');
         map.setPaintProperty(`field-${d.id}`, 'raster-opacity', p.opacity);
       }
-      map.setLayoutProperty('model', 'visibility', kind === 'model' ? 'visible' : 'none');
+      map.setLayoutProperty('model', 'visibility', !msg && kind === 'model' ? 'visible' : 'none');
       map.setPaintProperty('model', 'raster-opacity', Math.min(1, p.opacity + 0.05));
+      map.setLayoutProperty('msg', 'visibility', msg ? 'visible' : 'none');
+      map.setPaintProperty('msg', 'raster-opacity', p.opacity);
     }
 
     // ── system markers ────────────────────────────────────────────────
@@ -375,7 +392,7 @@ export default function MapView(props: MapViewProps) {
         c.width = w;
         c.height = h;
       }
-      const on = p.particles && lastKind !== 'model';
+      const on = p.particles && lastKind !== 'model' && p.sat !== 'msg';
       const got = on ? p.engine.flowAt(p.frames, p.domain, t) : null;
       // fade the existing trails
       ctx.globalCompositeOperation = 'destination-in';
@@ -422,6 +439,8 @@ export default function MapView(props: MapViewProps) {
     // ── render loop ───────────────────────────────────────────────────
     let drawKey = '';
     let modelKey = '';
+    let msgKey = '';
+    let msgSwapAt = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
       const p = propsRef.current;
@@ -433,7 +452,17 @@ export default function MapView(props: MapViewProps) {
       syncVisibility(kind);
       syncEstates();
 
-      if (kind === 'model' && p.grid) {
+      if (p.sat === 'msg') {
+        const slot = msgSlot(t, p.msgLatest);
+        const key = `${p.msgProduct}|${slot}`;
+        // one tile set per 15-minute slot, at most about three swaps a second while playing
+        if (key !== msgKey && performance.now() - msgSwapAt > 350) {
+          msgKey = key;
+          msgSwapAt = performance.now();
+          (map.getSource('msg') as maplibregl.RasterTileSource).setTiles(msgTiles(p.msgProduct, slot));
+          p.onMsgTime?.(slot);
+        }
+      } else if (kind === 'model' && p.grid) {
         const g = p.grid;
         const hi = gridHour(g, t);
         lastGridHour = hi;
@@ -478,7 +507,7 @@ export default function MapView(props: MapViewProps) {
       const ir = p.frames.filter((f) => f.systems);
       let shown = ir[ir.length - 1];
       for (const f of ir) if (Date.parse(f.t) <= t + 60000) shown = f;
-      syncMarkers(p.domain === 'region' ? (t >= Date.parse(ir[0]?.t ?? '') ? shown : ir[0]) : undefined);
+      syncMarkers(p.domain === 'region' && p.sat !== 'msg' ? (t >= Date.parse(ir[0]?.t ?? '') ? shown : ir[0]) : undefined);
       stepParticles(t);
     };
     raf = requestAnimationFrame(loop);
@@ -503,8 +532,8 @@ export default function MapView(props: MapViewProps) {
       firstDomain.current = false;
       return;
     }
-    mapRef.current?.fitBounds(props.domain === 'sl' ? SL_VIEW : REGION_VIEW, { padding: VIEW_PADDING, duration: 900 });
-  }, [props.domain]);
+    mapRef.current?.fitBounds(props.sat === 'msg' ? MSG_VIEW : props.domain === 'sl' ? SL_VIEW : REGION_VIEW, { padding: VIEW_PADDING, duration: 900 });
+  }, [props.domain, props.sat]);
 
   // fly to a selected estate / system
   useEffect(() => {
